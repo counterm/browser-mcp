@@ -13,6 +13,7 @@
 
   const DEFAULT_CONFIG = {
     version: 2,
+    enabled: true, // 全局总开关：false 时所有页面一律不接入（优先级高于任何规则）
     domains: [], // {id, host, enabled, note, source, createdAt}
     regexes: [], // {id, pattern, enabled, note, createdAt}
   };
@@ -82,7 +83,12 @@
   /** 归一化 + 旧 schema（黑白名单 v1）迁移：只保留白名单条目，丢弃黑名单条目 */
   function normalizeConfig(raw) {
     const cfg = raw && typeof raw === 'object' ? raw : {};
-    const out = { version: DEFAULT_CONFIG.version, domains: [], regexes: [] };
+    const out = {
+      version: DEFAULT_CONFIG.version,
+      enabled: !(cfg.enabled === false), // 旧配置无此字段 => 默认启用
+      domains: [],
+      regexes: [],
+    };
     for (const d of Array.isArray(cfg.domains) ? cfg.domains : []) {
       if (d && d.list && d.list !== 'white') continue; // 旧黑名单条目不再生效
       const host = toRegistrableDomain(parseHost(d && d.host) || (d && d.host));
@@ -121,11 +127,19 @@
     return new Promise((res) => chrome.storage.local.set({ [STORAGE_KEY]: c }, () => res(c)));
   }
 
+  /** 设置全局总开关；返回 {config, error} */
+  function setEnabled(cfg, on) {
+    const c = normalizeConfig(cfg);
+    c.enabled = !!on;
+    return { config: c };
+  }
+
   /* ============ 匹配引擎 ============ */
 
   /** 返回 {allowed, hit:{kind,value}|null}；域名或正则任一命中即放行 */
   function matchUrl(url, cfg) {
     const c = cfg || DEFAULT_CONFIG;
+    if (!c.enabled) return { allowed: false, hit: null, off: true }; // 总开关关闭：全部拦截
     const domain = urlToDomain(url);
     if (domain) {
       const d = c.domains.find((x) => x.enabled && x.host === domain);
@@ -232,5 +246,6 @@
     matchUrl, isBlocked,
     addDomain, removeDomain, updateDomain,
     addRegex, updateRegex, removeRegex, importConfig,
+    setEnabled,
   };
 })(typeof self !== 'undefined' ? self : window);

@@ -149,14 +149,18 @@ async function applyFilterChange() {
   }
 }
 
-/** 当前 tab 命中白名单显示 W，未命中留空 */
+/** 当前 tab 命中白名单显示 W；总开关关闭显示 OFF（灰底），未命中留空 */
 async function updateBadge() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !/^https?:/i.test(tab.url || '')) { await chrome.action.setBadgeText({ text: '' }); return; }
-    if (URLFilter.matchUrl(tab.url, filterCfg).allowed) {
+    const v = URLFilter.matchUrl(tab.url, filterCfg);
+    if (v.allowed) {
       await chrome.action.setBadgeBackgroundColor({ color: '#2e7d32' });
       await chrome.action.setBadgeText({ text: 'W' });
+    } else if (v.off) {
+      await chrome.action.setBadgeBackgroundColor({ color: '#9e9e9e' });
+      await chrome.action.setBadgeText({ text: 'OFF' });
     } else {
       await chrome.action.setBadgeText({ text: '' });
     }
@@ -177,8 +181,16 @@ async function handleFilterMessage(msg, sendResponse) {
         allowed: verdict().allowed,
         hit: verdict().hit,
         record: filterCfg.domains.find((d) => d.host === domain) || null,
+        enabled: filterCfg.enabled !== false,
       });
       return;
+
+    case 'filter:setEnabled': {
+      const r = URLFilter.setEnabled(filterCfg, msg.enabled);
+      filterCfg = await URLFilter.saveConfig(r.config); // onChanged 会断开/恢复全部页面
+      sendResponse({ ok: true, enabled: filterCfg.enabled !== false });
+      return;
+    }
 
     case 'filter:quickAdd': {
       if (!domain) {
@@ -429,5 +441,5 @@ chrome.tabs.onActivated.addListener(() => updateBadge());
 
 chrome.tabs.onRemoved.addListener((tabId) => dropEntry(tabId, 'tab removed'));
 
-reloadFilterCfg().then(() => log(`whitelist loaded: domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));
+reloadFilterCfg().then(() => log(`whitelist loaded: ${filterCfg.enabled === false ? 'disabled' : 'enabled'}, domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));
 log(`loaded, broker=ws://${CFG.host}:${CFG.port}`);

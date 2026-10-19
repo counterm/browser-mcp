@@ -1,4 +1,4 @@
-/* popup：当前页面白名单状态 + 一键加入/移出 */
+/* popup：接入总开关 + 当前页面白名单状态 + 一键加入/移出 */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
@@ -8,6 +8,8 @@
     const st = await send({ type: 'filter:status' });
     if (!st || !st.ok) return;
     const { url, domain, allowed, hit, record } = st;
+
+    renderMaster(st);
 
     $('host').textContent = domain || url || '(未知页面)';
     try {
@@ -29,6 +31,17 @@
       : '未命中任何规则，该页面不会接入 broker';
     renderButtons(st);
   }
+
+  /* 启用状态只由开关本身表示 */
+  function renderMaster(st) {
+    $('enabled').checked = st.enabled !== false;
+  }
+
+  $('enabled').onchange = async () => {
+    const r = await send({ type: 'filter:setEnabled', enabled: $('enabled').checked });
+    if (r && !r.ok) $('msg').textContent = r.error || '';
+    refresh();
+  };
 
   function renderButtons(st) {
     const box = $('btns');

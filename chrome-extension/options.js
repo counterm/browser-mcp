@@ -16,9 +16,16 @@
 
   async function load() {
     cfg = await URLFilter.loadConfig();
+    renderMaster();
     renderDomains();
     renderRegexes();
   }
+
+  function renderMaster() {
+    $('g-enabled').checked = cfg.enabled !== false;
+  }
+
+  $('g-enabled').onchange = () => save(URLFilter.setEnabled(cfg, $('g-enabled').checked).config);
 
   async function save(next) {
     cfg = await URLFilter.saveConfig(next); // 写入 storage，SW 经 onChanged 热生效

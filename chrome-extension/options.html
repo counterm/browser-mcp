@@ -6,7 +6,7 @@
 <style>
   body { max-width: 860px; margin: 0 auto; padding: 20px; color: #222;
          font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  h1 { font-size: 18px; }
+  h1 { font-size: 18px; display: flex; align-items: center; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid #ddd; margin-bottom: 16px; }
   .tabs button { padding: 8px 16px; border: none; background: none; cursor: pointer;
                  font-size: 14px; color: #555; border-bottom: 2px solid transparent; }
@@ -35,10 +35,18 @@
   .foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid #ddd;
           display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: #555; font-size: 13px; }
   .count { color: #999; font-size: 12px; margin-left: auto; }
+  .master { display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+            font-size: 13px; cursor: pointer; user-select: none; }
+  .master input { accent-color: #1a73e8; margin: 0; }
 </style>
 </head>
 <body>
-  <h1>站点白名单配置</h1>
+  <h1>站点白名单配置
+    <label class="master" id="g-master" title="总开关：关闭后所有页面断开 broker 且不注册，重新开启自动恢复">
+      <span>启用</span>
+      <input type="checkbox" id="g-enabled">
+    </label>
+  </h1>
   <p style="font-size:13px;color:#666;margin:0 0 16px">
     仅白名单内的页面会接入 broker：命中域名（自动含全部子域名）或正则即放行，其余页面不注册、不广播。
   </p>
