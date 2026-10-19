@@ -1,11 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Page Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "把浏览器页面广播给本地 broker (127.0.0.1:8766)，供任意 CLI/IDE 发现并接入控制",
   "minimum_chrome_version": "120",
-  "permissions": ["tabs", "userScripts"],
+  "permissions": ["tabs", "userScripts", "storage"],
   "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Page Bridge"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "background.js"
   },

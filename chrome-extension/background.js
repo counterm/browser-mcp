@@ -11,6 +11,8 @@
  */
 const CFG = { host: '127.0.0.1', port: 8766, hbMs: 5000 };
 
+importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
+
 const CONTENT_ACTIONS = [
   'ping', 'snapshot', 'click', 'type', 'press', 'select', 'scroll', 'hover',
   'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight',
@@ -114,9 +116,98 @@ async function doEval(e, code) {
   throw new Error(raw + (csp ? EVAL_HINT : ''));
 }
 
+/* ============ 站点过滤（白名单） ============
+ * 规则：域名（自动含全部子域名）或正则命中 => 接入 broker；未命中 => 不注册/不广播。
+ * 配置由 options/popup 写入 storage，这里经 onChanged 热生效（≤1s）。
+ */
+let filterCfg = URLFilter.normalizeConfig(null);
+
+async function reloadFilterCfg() {
+  filterCfg = await URLFilter.loadConfig();
+  applyFilterChange();
+  updateBadge();
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[URLFilter.STORAGE_KEY]) {
+    filterCfg = URLFilter.normalizeConfig(changes[URLFilter.STORAGE_KEY].newValue);
+    applyFilterChange();
+    updateBadge();
+  }
+});
+
+/** 配置变更后重算：不再命中的断开；新命中的补注册（含存量页面） */
+async function applyFilterChange() {
+  for (const [tabId, e] of [...tabs]) {
+    if (URLFilter.isBlocked(e.url, filterCfg)) dropEntry(tabId, 'filter: not in whitelist');
+  }
+  const all = await chrome.tabs.query({});
+  for (const t of all) {
+    if (!t.id || !t.url || !/^https?:/i.test(t.url) || tabs.has(t.id)) continue;
+    if (URLFilter.isBlocked(t.url, filterCfg)) continue;
+    ensureEntry(t.id, { url: t.url, title: t.title || '' });
+  }
+}
+
+/** 当前 tab 命中白名单显示 W，未命中留空 */
+async function updateBadge() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !/^https?:/i.test(tab.url || '')) { await chrome.action.setBadgeText({ text: '' }); return; }
+    if (URLFilter.matchUrl(tab.url, filterCfg).allowed) {
+      await chrome.action.setBadgeBackgroundColor({ color: '#2e7d32' });
+      await chrome.action.setBadgeText({ text: 'W' });
+    } else {
+      await chrome.action.setBadgeText({ text: '' });
+    }
+  } catch {}
+}
+
+/** popup 消息接口：配置单点写入，全部经 SW，避免并发写冲突 */
+async function handleFilterMessage(msg, sendResponse) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const url = (tab && tab.url) || '';
+  const domain = URLFilter.urlToDomain(url);
+  const verdict = () => URLFilter.matchUrl(url, filterCfg);
+
+  switch (msg.type) {
+    case 'filter:status':
+      sendResponse({
+        ok: true, url, domain, verdict: verdict(),
+        allowed: verdict().allowed,
+        hit: verdict().hit,
+        record: filterCfg.domains.find((d) => d.host === domain) || null,
+      });
+      return;
+
+    case 'filter:quickAdd': {
+      if (!domain) {
+        sendResponse({ ok: false, error: '当前页面无域名（如 file://），无法一键添加，可在选项页用正则规则匹配' });
+        return;
+      }
+      const r = URLFilter.addDomain(filterCfg, domain, 'quick-add');
+      if (r.error) { sendResponse({ ok: false, error: r.error }); return; }
+      filterCfg = await URLFilter.saveConfig(r.config);
+      sendResponse({ ok: true, verdict: verdict() });
+      return;
+    }
+
+    case 'filter:quickRemove': {
+      if (!domain) { sendResponse({ ok: false, error: '当前页面无域名' }); return; }
+      filterCfg = await URLFilter.saveConfig(URLFilter.removeDomain(filterCfg, domain).config);
+      sendResponse({ ok: true, verdict: verdict() });
+      return;
+    }
+  }
+}
+
 /* ============ 标签页 <-> WS 生命周期 ============ */
 
 function ensureEntry(tabId, info) {
+  if (info.url && URLFilter.isBlocked(info.url, filterCfg)) {
+    log(`tab${tabId} 不在白名单，不接入: ${info.url}`);
+    return null;
+  }
   let e = tabs.get(tabId);
   if (!e) {
     e = { tabId, url: info.url, title: info.title, viewport: info.viewport || '',
@@ -285,6 +376,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
   }
+  if (typeof msg.type === 'string' && msg.type.startsWith('filter:')) {
+    handleFilterMessage(msg, sendResponse); // 异步 sendResponse
+    return true;
+  }
   const tabId = sender.tab && sender.tab.id;
   if (tabId == null) return;
   if (msg && msg.type === 'hello') {
@@ -297,6 +392,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (e) {
       if (msg.name === 'nav' && msg.url) {
         e.url = msg.url;
+        if (URLFilter.isBlocked(e.url, filterCfg)) {
+          dropEntry(tabId, 'filter: not in whitelist (nav)');
+          sendResponse({ ok: true });
+          return;
+        }
         if (msg.title) e.title = msg.title;
         sendWS(e, { type: 'hb', url: e.url, title: e.title });
       }
@@ -313,6 +413,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   const e = tabs.get(tabId);
+  if (change.url && e && URLFilter.isBlocked(change.url, filterCfg)) {
+    dropEntry(tabId, 'filter: not in whitelist');
+    return;
+  }
   if (!e) return;
   if (change.url) e.url = change.url;
   if (change.title) e.title = change.title;
@@ -321,6 +425,9 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   }
 });
 
+chrome.tabs.onActivated.addListener(() => updateBadge());
+
 chrome.tabs.onRemoved.addListener((tabId) => dropEntry(tabId, 'tab removed'));
 
+reloadFilterCfg().then(() => log(`whitelist loaded: domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));
 log(`loaded, broker=ws://${CFG.host}:${CFG.port}`);

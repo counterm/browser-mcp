@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Page Bridge - 白名单配置</title>
+<style>
+  body { max-width: 860px; margin: 0 auto; padding: 20px; color: #222;
+         font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 18px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #ddd; margin-bottom: 16px; }
+  .tabs button { padding: 8px 16px; border: none; background: none; cursor: pointer;
+                 font-size: 14px; color: #555; border-bottom: 2px solid transparent; }
+  .tabs button.on { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
+  .panel { display: none; }
+  .panel.on { display: block; }
+  .form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  input[type=text] { padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
+  input[type=text].grow { flex: 1; min-width: 220px; }
+  input.bad { border-color: #c62828; }
+  button { padding: 6px 12px; border: 1px solid #ccc; border-radius: 6px;
+           background: #fff; cursor: pointer; font-size: 13px; }
+  button.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; }
+  button.danger { color: #c62828; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #777; margin: 0 0 10px; min-height: 16px; }
+  .hint.err { color: #c62828; }
+  .hint.ok { color: #2e7d32; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: middle; }
+  th { color: #666; font-weight: 600; white-space: nowrap; }
+  td.host { font-family: Consolas, monospace; }
+  td input[type=text] { width: 100%; min-width: 0; }
+  .empty { color: #999; text-align: center; padding: 20px; }
+  .foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid #ddd;
+          display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: #555; font-size: 13px; }
+  .count { color: #999; font-size: 12px; margin-left: auto; }
+</style>
+</head>
+<body>
+  <h1>站点白名单配置</h1>
+  <p style="font-size:13px;color:#666;margin:0 0 16px">
+    仅白名单内的页面会接入 broker：命中域名（自动含全部子域名）或正则即放行，其余页面不注册、不广播。
+  </p>
+  <div class="tabs">
+    <button id="tab-domains" class="on">域名列表</button>
+    <button id="tab-regex">正则规则</button>
+  </div>
+
+  <!-- ============ Tab 1：域名列表 ============ -->
+  <div class="panel on" id="p-domains">
+    <div class="form">
+      <input type="text" class="grow" id="d-input" placeholder="输入任意 URL 或域名，如 github.com/gist">
+      <button class="primary" id="d-add">添加</button>
+    </div>
+    <div class="hint" id="d-hint"></div>
+    <div class="toolbar">
+      <input type="text" id="d-search" placeholder="搜索域名 / 备注" style="flex:0 0 180px;min-width:120px">
+      <button id="d-import-btn">导入</button>
+      <button id="d-export-btn">导出</button>
+      <input type="file" id="d-import-file" accept=".json,.txt" style="display:none">
+      <span class="count" id="d-count"></span>
+    </div>
+    <table>
+      <thead>
+        <tr><th>主域名</th><th>启用</th><th>备注</th><th>来源/时间</th><th></th></tr>
+      </thead>
+      <tbody id="d-body"></tbody>
+    </table>
+    <div class="empty" id="d-empty" style="display:none">暂无记录</div>
+  </div>
+
+  <!-- ============ Tab 2：正则规则 ============ -->
+  <div class="panel" id="p-regex">
+    <div class="form">
+      <input type="text" class="grow" id="r-input" placeholder="正则表达式，如 ^https?://example\.com/admin">
+      <button class="primary" id="r-add">添加</button>
+      <button id="r-gen">从当前页面生成</button>
+    </div>
+    <div class="hint" id="r-hint"></div>
+    <div class="toolbar">
+      <input type="text" class="grow" id="r-test" placeholder="测试：输入 URL 实时预览匹配结果">
+      <span id="r-test-out" style="font-size:13px"></span>
+    </div>
+    <table>
+      <thead>
+        <tr><th>pattern</th><th>启用</th><th>备注</th><th></th></tr>
+      </thead>
+      <tbody id="r-body"></tbody>
+    </table>
+    <div class="empty" id="r-empty" style="display:none">暂无规则</div>
+  </div>
+
+  <!-- ============ 公共操作 ============ -->
+  <div class="foot">
+    <button id="g-export">导出全部配置</button>
+    <button class="danger" id="g-reset">清空全部规则</button>
+    <span class="hint" id="g-hint"></span>
+  </div>
+
+  <script src="filter.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

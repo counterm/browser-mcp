@@ -20,8 +20,11 @@
 | `requirements.txt` | broker 的 Python 依赖（仅 aiohttp） |
 | `cli_client.py` | 外部 CLI 接入示例（纯标准库）：发现 → 校验 URL → 接入 → LLM 驱动循环 |
 | `chrome-extension/` | 接入端方案 A（推荐）：Chrome 扩展 MV3 |
-| ├ `manifest.json` | 扩展清单：权限、注入规则（`<all_urls>`，排除 broker 自身端口） |
-| ├ `background.js` | Service Worker：每个标签页维持一条到 broker 的 WebSocket；命令路由（DOM 动作转发给 content，截图/标签管理自己执行） |
+| ├ `manifest.json` | 扩展清单：权限、注入规则（`<all_urls>`，排除 broker 自身端口）、action popup、options 页 |
+| ├ `background.js` | Service Worker：每个标签页维持一条到 broker 的 WebSocket；命令路由（DOM 动作转发给 content，截图/标签管理自己执行）；站点白名单过滤 |
+| ├ `filter.js` | 白名单核心：配置存储、eTLD+1 主域名提取、匹配引擎（SW/popup/options 共用） |
+| ├ `popup.html` / `popup.js` | 工具栏弹窗：当前页白名单状态、一键加入/移出 |
+| ├ `options.html` / `options.js` | 完整配置页：域名列表与正则规则的增删改查、导入导出、正则实时测试面板 |
 | └ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等 17 种） |
 | `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
 | `build/` | 打包产物与测试密钥：`make-test-key.mjs`（生成测试私钥）、`debug-extension.pem`、`chrome-extension.crx` |
@@ -173,6 +176,16 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 `run` 的循环就是「snapshot → LLM 决策一个 JSON 命令 → POST /call → 结果回填 → 循环」，
 你的 IDE/Agent 只需要复刻这个循环（或直接调 `/call` 接口）即可接入任何编排框架。
 
+## 站点白名单
+
+纯白名单模式：**只有白名单内的页面才接入 broker**（命中域名或正则即放行），其余页面不注册、不广播。
+
+- **入口**：点工具栏图标打开 popup —— 展示当前页是否在白名单（含命中来源：域名/正则），一键加入/移出
+- **域名列表**：只存 eTLD+1 主域名（如 `github.com` 自动覆盖 `gist.github.com` 等所有子域名；`bbc.co.uk` 等多级后缀正确识别），支持增删改查、搜索、导入导出（JSON/纯文本）
+- **正则规则**：匹配完整 URL，保存前校验合法性，附带实时测试面板
+- **即时生效**：配置改动后已注册页面按新规则断开/恢复，无需刷新页面；当前 tab 命中白名单时工具栏图标显示角标 `W`
+- 详细需求与设计见 `docs/spec-url-filter.md`
+
 ## eval 与 CSP（扩展版）
 
 `eval` 在内容脚本里执行时会受**页面 CSP** 约束：GitHub、腾讯元宝等 `script-src 'self'` 严格站点会直接报
@@ -196,7 +209,7 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 
 - broker 只绑定 `127.0.0.1`，局域网不可见；公网机器上请务必设置 `BRIDGE_TOKEN`
 - `eval` 等于把页面权限完全交给接入方，**只在自己可控的浏览器上启用**
-- 油猴版可用 `CFG.urlFilter`（正则白名单）限制只广播特定站点
+- 油猴版可用 `CFG.urlFilter`（正则白名单）限制只广播特定站点；扩展版用「站点过滤」配置黑白名单（见上文）
 - 请勿用于未授权的网站或他人会话
 
 ## 已知边界
