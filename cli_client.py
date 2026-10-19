@@ -145,7 +145,9 @@ def main():
 
     if args.cmd == "list":
         for p in list_pages():
-            print(f"{p['id']}  [{p['mode']}]  {p['url']}  | {p.get('title','')}  ({p['ago']}s)")
+            em = p.get("eval_mode", "?")
+            mark = {"userscript": "eval✓", "fallback": "eval~csp"}.get(em, f"eval?{em}")
+            print(f"{p['id']}  [{p['mode']}]  ({mark})  {p['url']}  | {p.get('title','')}  ({p['ago']}s)")
     elif args.cmd == "watch":
         watch()
     elif args.cmd == "snap":

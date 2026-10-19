@@ -126,8 +126,9 @@ def handle_page_msg(pid: str, msg: dict):
     t = msg.get("type")
     if t == "hb":
         changed = (msg.get("url") != page["info"].get("url")
-                   or msg.get("title") != page["info"].get("title"))
-        for k in ("url", "title", "viewport"):
+                   or msg.get("title") != page["info"].get("title")
+                   or msg.get("eval_mode") != page["info"].get("eval_mode"))
+        for k in ("url", "title", "viewport", "eval_mode"):
             if msg.get(k):
                 page["info"][k] = msg[k]
         if changed:
@@ -155,7 +156,7 @@ async def h_page_ws(request):
             continue
         t = data.get("type")
         if t == "hello":
-            info = {k: data.get(k) for k in ("url", "title", "viewport", "ua") if data.get(k)}
+            info = {k: data.get(k) for k in ("url", "title", "viewport", "ua", "eval_mode") if data.get(k)}
             pid = register_page(info, ws=ws)
             await ws.send_json({"type": "welcome", "page_id": pid})
         elif t == "bye" and pid:

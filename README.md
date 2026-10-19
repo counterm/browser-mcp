@@ -110,7 +110,7 @@ node build\make-test-key.mjs
 
 | 接口 | 用途 |
 |---|---|
-| `GET /pages` | 发现：在线页面列表（id / url / title / mode / ago） |
+| `GET /pages` | 发现：在线页面列表（id / url / title / mode / ago / eval_mode） |
 | `GET /events` | 订阅广播（SSE）：`page_up` / `page_update` / `page_down` / `page_event` |
 | `POST /call/{pid}` | 接入并执行一条命令：body 为命令 JSON，`?timeout=30` 控制等待 |
 | `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合 IDE agent 常驻会话） |
@@ -145,7 +145,7 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}
 | `hover` | `bid` | 悬停 |
 | `nav` | `url` | 页面跳转 |
 | `back` / `reload` | - | 后退 / 刷新 |
-| `eval` | `code` | 页面内执行任意 JS（支持 async/await），全方位权限核心 |
+| `eval` | `code` | 页面内执行任意 JS（支持 async/await）。扩展版优先走 userScripts 通道绕过 CSP；油猴版/未开启开关时走内容脚本，受页面 CSP 约束。详见下方「eval 与 CSP」 |
 | `cookies` | `op?, name?, value?` | 读/写 cookie（op=get/set） |
 | `storage` | `area?, key, value?` | 读/写 localStorage / sessionStorage |
 | `upload` | `bid, files:[{name,mime,content}]` | 给 `<input type=file>` 塞文件 |
@@ -173,6 +173,25 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 `run` 的循环就是「snapshot → LLM 决策一个 JSON 命令 → POST /call → 结果回填 → 循环」，
 你的 IDE/Agent 只需要复刻这个循环（或直接调 `/call` 接口）即可接入任何编排框架。
 
+## eval 与 CSP（扩展版）
+
+`eval` 在内容脚本里执行时会受**页面 CSP** 约束：GitHub、腾讯元宝等 `script-src 'self'` 严格站点会直接报
+`unsafe-eval` 拦截错误。扩展版提供 userScripts 通道绕过（Chrome ≥ 135）：
+
+1. `chrome://extensions` → Page Bridge → **详情** → 打开「**允许用户脚本**」(Allow user scripts) 开关
+2. 无需重载扩展，下一个心跳（约 5 秒）内生效
+
+**客户端如何感知**（LLM 编排必读）：
+
+- `GET /pages` 每条页面带 `eval_mode` 字段：
+  - `"userscript"` — 已开启开关，eval 不受 CSP 限制，任何页面可用
+  - `"fallback"` — 未开启，eval 走内容脚本，严格 CSP 站点会失败
+- `ping` 的返回里也带 `eval_mode`
+- 在受限页面上调 `eval` 失败时，`error` 里会附带开启指引与风险提示，LLM 可原样转告用户
+
+**风险提示（请转告用户）**：「允许用户脚本」开启后，代理可在任何页面执行任意 JS（读写页面数据、代发请求等）。
+只在自己可控的浏览器上开启；不要在不可信的编排方接入时开启。
+
 ## 安全说明
 
 - broker 只绑定 `127.0.0.1`，局域网不可见；公网机器上请务必设置 `BRIDGE_TOKEN`
@@ -194,3 +213,5 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 | 页面在列表里但命令超时 | 标签页被浏览器休眠了，切换过去激活即可；或页面关闭前有未完成命令 |
 | 油猴版某些页面连不上 | 看控制台 `[bridge]` 日志，若显示"降级为 HTTP 长轮询"即 CSP 拦截，属正常；或改用扩展版 |
 | `file://` 页面不上线 | 扩展详情开启「允许访问文件网址」；油猴需在设置里允许访问文件 |
+| `eval` 报 CSP / unsafe-eval 错误 | 属正常（页面 CSP 限制）。按「eval 与 CSP」章节开启扩展的「允许用户脚本」开关；或改用其他 DOM 动作 |
+| `/pages` 里 `eval_mode` 一直是 `fallback` | userScripts 需要 Chrome ≥ 135 且手动开启「允许用户脚本」开关；`chrome://extensions` → Page Bridge → 详情里找 |

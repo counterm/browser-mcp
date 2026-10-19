@@ -10,7 +10,18 @@
 
   const W = window;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const sendMsg = (m) => chrome.runtime.sendMessage(m).catch(() => {});
+  // 扩展重载后旧内容脚本的 runtime 上下文会失效（Extension context invalidated），
+  // 静默丢弃后续消息，页面刷新后由新实例接管
+  let ctxDead = false;
+  const sendMsg = (m) => {
+    if (ctxDead) return;
+    try {
+      chrome.runtime.sendMessage(m).catch(() => {});
+    } catch {
+      ctxDead = true;
+      console.warn('[bridge] extension context invalidated, reload this page to reconnect');
+    }
+  };
   const pageInfo = () => ({
     url: location.href,
     title: document.title,

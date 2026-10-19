@@ -25,6 +25,95 @@ const log = (...a) => console.log('%c[bridge-sw]', 'color:#08f', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sendWS = (e, msg) => { if (e.ws && e.ws.readyState === 1) e.ws.send(JSON.stringify(msg)); };
 
+/* ============ eval 能力探测（userScripts 通道，绕页面 CSP） ============
+ * eval_mode:
+ *   'userscript'  - userScripts API 可用（用户已开启「允许用户脚本」），eval 走 USER_SCRIPT world，不受页面 CSP 限制
+ *   'fallback'    - 走内容脚本 eval，受页面 CSP 约束（GitHub 等严格站点会被拦）
+ * 该状态随 hello/hb 广播给 broker，客户端在 /pages 里可直接看到；LLM 据此提示用户开启开关。
+ */
+const EVAL_HINT =
+  ' 页面 CSP 禁止 eval。可开启绕过：chrome://extensions → Page Bridge → 详情 → 打开「允许用户脚本」(Allow user scripts)。'
+  + '⚠️ 开启后本代理可在页面执行任意 JS，仅在你自己可控的浏览器上开启。';
+
+function userScriptsReady() {
+  try {
+    chrome.userScripts; // 属性访问：权限缺失/版本过低时抛错
+    chrome.userScripts.getScripts(); // 调用：用户未开启「允许用户脚本」时抛错
+    return !!(chrome.userScripts.execute && chrome.userScripts.configureWorld);
+  } catch { return false; }
+}
+
+const evalMode = () => (userScriptsReady() ? 'userscript' : 'fallback');
+
+const pendingEval = new Map(); // evalId -> { resolve, reject, timer }
+let worldConfigured = false;
+
+/** 注入到 USER_SCRIPT world 执行的函数体（eval 不受页面 CSP 限制），结果经 runtime 消息回传 */
+function __bridgeUserEval(code, evalId) {
+  (async () => {
+    const ser = (v, d = 0) => {
+      if (v === undefined) return 'undefined';
+      if (v instanceof Element) return v.outerHTML.slice(0, 2000);
+      if (typeof v === 'function') return String(v).slice(0, 300);
+      if (v === null || typeof v !== 'object') return String(v);
+      if (d > 3) return '[depth-limit]';
+      try {
+        return JSON.stringify(v, (k, x) => {
+          if (typeof x === 'bigint') return String(x);
+          if (x instanceof Element) return x.outerHTML.slice(0, 300);
+          return x;
+        }, 1) || String(v);
+      } catch { return String(v); }
+    };
+    try {
+      const r = await eval(code);
+      chrome.runtime.sendMessage({ __bridge_eval: evalId, ok: true, data: ser(r) });
+    } catch (err) {
+      chrome.runtime.sendMessage({ __bridge_eval: evalId, ok: false, error: String((err && err.message) || err) });
+    }
+  })();
+}
+
+async function evalViaUserScripts(e, code) {
+  if (!worldConfigured) {
+    try { chrome.userScripts.configureWorld({ messaging: true }); worldConfigured = true; } catch {}
+  }
+  const evalId = crypto.randomUUID();
+  const p = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingEval.delete(evalId);
+      reject(new Error('eval timeout (userscript, 25s)'));
+    }, 25000);
+    pendingEval.set(evalId, { resolve, reject, timer });
+  });
+  const wrapper = `(${__bridgeUserEval})(${JSON.stringify(code)},${JSON.stringify(evalId)})`;
+  try {
+    await chrome.userScripts.execute({
+      target: { tabId: e.tabId },
+      world: 'USER_SCRIPT',
+      injectImmediately: true,
+      js: [{ code: wrapper }],
+    });
+  } catch (err) {
+    const pe = pendingEval.get(evalId);
+    if (pe) { clearTimeout(pe.timer); pendingEval.delete(evalId); }
+    throw new Error(`userScripts.execute failed: ${err.message || err}`);
+  }
+  return p;
+}
+
+/** eval 总入口：优先 userScripts；不可用或失败时回落内容脚本（可能被 CSP 拦，此时返回带开启指引的错误） */
+async function doEval(e, code) {
+  if (evalMode() === 'userscript') {
+    try { return await evalViaUserScripts(e, code); } catch (err) { log(err.message || err); }
+  }
+  const res = await chrome.tabs.sendMessage(e.tabId, { __bridge_cmd: { action: 'eval', code } });
+  if (res && res.ok) return res.data;
+  const raw = (res && res.error) || 'no response';
+  const csp = /Content Security Policy|unsafe-eval/i.test(raw);
+  throw new Error(raw + (csp ? EVAL_HINT : ''));
+}
+
 /* ============ 标签页 <-> WS 生命周期 ============ */
 
 function ensureEntry(tabId, info) {
@@ -40,7 +129,7 @@ function ensureEntry(tabId, info) {
     e.viewport = info.viewport || e.viewport;
     const s = e.ws && e.ws.readyState;
     if (s === undefined || s === 2 || s === 3) connectWS(e);
-    else if (s === 1) sendWS(e, { type: 'hb', url: e.url, title: e.title });
+    else if (s === 1) sendWS(e, { type: 'hb', url: e.url, title: e.title, eval_mode: evalMode() });
   }
   return e;
 }
@@ -69,11 +158,11 @@ function connectWS(e) {
   sock.onopen = () => {
     clearTimeout(kill);
     e.fails = 0;
-    const hello = { type: 'hello', url: e.url, title: e.title, caps: CAPS };
+    const hello = { type: 'hello', url: e.url, title: e.title, caps: CAPS, eval_mode: evalMode() };
     if (e.viewport) hello.viewport = e.viewport;
     sock.send(JSON.stringify(hello));
     clearInterval(e.hb);
-    e.hb = setInterval(() => sendWS(e, { type: 'hb', url: e.url, title: e.title }), CFG.hbMs);
+    e.hb = setInterval(() => sendWS(e, { type: 'hb', url: e.url, title: e.title, eval_mode: evalMode() }), CFG.hbMs);
     log(`tab${e.tabId} WS connected: ${e.url}`);
   };
   sock.onmessage = (ev) => {
@@ -109,12 +198,21 @@ async function route(e, cmd) {
     }
     return;
   }
+  if (cmd.action === 'eval') {
+    try {
+      sendWS(e, { type: 'result', id: cmd.id, ok: true, data: (await doEval(e, cmd.code || '')) ?? null });
+    } catch (err) {
+      sendWS(e, { type: 'result', id: cmd.id, ok: false, error: String((err && err.message) || err) });
+    }
+    return;
+  }
   if (!CONTENT_ACTIONS.includes(cmd.action)) {
     sendWS(e, { type: 'result', id: cmd.id, ok: false, error: `unknown action: ${cmd.action}` });
     return;
   }
   try {
     const res = await chrome.tabs.sendMessage(e.tabId, { __bridge_cmd: cmd });
+    if (cmd.action === 'ping' && res && res.ok && res.data) res.data.eval_mode = evalMode();
     sendWS(e, {
       type: 'result', id: cmd.id,
       ok: !!(res && res.ok),
@@ -176,6 +274,17 @@ const BACKGROUND_ACTIONS = {
 /* ============ 内容脚本消息 & 标签页事件 ============ */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.__bridge_eval) {
+    // USER_SCRIPT world 的 eval 结果回传
+    const pe = pendingEval.get(msg.__bridge_eval);
+    if (pe) {
+      clearTimeout(pe.timer);
+      pendingEval.delete(msg.__bridge_eval);
+      msg.ok ? pe.resolve(msg.data) : pe.reject(new Error(msg.error || 'eval failed'));
+    }
+    sendResponse({ ok: true });
+    return;
+  }
   const tabId = sender.tab && sender.tab.id;
   if (tabId == null) return;
   if (msg && msg.type === 'hello') {
