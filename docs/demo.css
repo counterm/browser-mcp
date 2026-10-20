@@ -1,0 +1,59 @@
+/* 演示页样式 —— 模拟后台页面（承载原型，不属于工具箱）。
+   双主题 CSS 变量 / body.locked 滚动锁 / 固定导航 / 弹窗 / 演示控制条样式 */
+
+:root{--bg:#f5f6f8;--card:#fff;--text:#111827;--muted:#6b7280;--line:#e5e7eb;--nav:rgba(255,255,255,.86)}
+body.dark{--bg:#0b1220;--card:#111a2e;--text:#e5e7eb;--muted:#94a3b8;--line:#1f2a44;--nav:rgba(13,20,38,.86)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;transition:background .3s,color .3s}
+body.locked{overflow:hidden}
+/* ---- 模拟页：顶部固定导航（用于演示「移除 fixed 浮层」）---- */
+#nav{position:fixed;top:0;left:0;right:0;height:52px;display:flex;align-items:center;gap:18px;padding:0 22px;background:var(--nav);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);z-index:900}
+#nav .logo{font-weight:700;letter-spacing:.3px}
+#nav a{color:var(--muted);text-decoration:none;font-size:13px}
+#nav a:hover{color:var(--text)}
+#nav .sp{flex:1}
+#nav input{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:5px 10px;font-size:12px;width:180px}
+#nav .avatar{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#a855f7)}
+main{max-width:920px;margin:0 auto;padding:76px 20px 60px}
+.hero h1{margin:0 0 6px;font-size:26px}
+.hero p{margin:0 0 18px;color:var(--muted)}
+.hero .row{display:flex;gap:10px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.stat b{display:block;font-size:22px}
+.stat span{color:var(--muted);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px}
+.card h2{margin:0 0 12px;font-size:16px;display:flex;align-items:center;gap:8px}
+.tag{font-size:11px;color:#8b5cf6;background:rgba(139,92,246,.12);border-radius:99px;padding:2px 8px;font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--muted);font-weight:500;font-size:12px}
+tr:last-child td{border-bottom:none}
+.pill{font-size:11px;border-radius:99px;padding:2px 8px}
+.pill.g{background:rgba(16,185,129,.14);color:#059669}
+.pill.y{background:rgba(245,158,11,.14);color:#b45309}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+input,textarea,button{font:inherit}
+input,textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:8px;padding:7px 10px;font-size:13px}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:#6366f1;color:#6366f1}
+.btn.pri{background:#4f46e5;border-color:#4f46e5;color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.no-select{user-select:none;-webkit-user-select:none;background:rgba(239,68,68,.07);border:1px dashed rgba(239,68,68,.4);border-radius:8px;padding:10px;color:var(--muted);font-size:13px}
+.pulse{width:12px;height:12px;border-radius:50%;background:#ef4444;animation:pulse 1.2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.5)}70%{box-shadow:0 0 0 12px rgba(239,68,68,0)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}}
+.misc-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
+footer{text-align:center;color:var(--muted);font-size:12px;padding:30px 0 40px}
+#modal{position:fixed;inset:0;display:none;place-items:center;background:rgba(2,6,23,.55);z-index:950}
+#modal.show{display:grid}
+#modal .box{background:var(--card);border-radius:14px;padding:22px;width:min(420px,88vw);border:1px solid var(--line)}
+#modal h3{margin:0 0 8px}
+#modal p{color:var(--muted);font-size:13px;margin:0 0 16px}
+/* 页面自带的固定客服浮窗（用于演示「移除 fixed 浮层」） */
+#fake-chat{position:fixed;left:18px;bottom:18px;background:#4f46e5;color:#fff;border-radius:99px;padding:9px 16px;font-size:13px;box-shadow:0 8px 20px rgba(79,70,229,.4);z-index:800;cursor:pointer}
+/* ---- 演示控制条（不属于工具箱，仅原型用于切换场景）---- */
+.demo-bar{position:fixed;top:64px;left:18px;z-index:700;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:12px;box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.demo-bar b{font-size:11px;color:var(--muted);font-weight:600}
+.demo-bar button{border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:7px;padding:4px 9px;cursor:pointer;font-size:12px;text-align:left}
+.demo-bar button:hover{border-color:#6366f1;color:#6366f1}
