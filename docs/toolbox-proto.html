@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>工具箱原型 · Browser Agent</title>
-<!-- 工具箱原型（演示页壳）：演示页样式 demo.css · 演示页脚本 demo.js · 工具箱 toolbox.js -->
+<!-- 工具箱原型（演示页壳）：演示页样式 demo.css · 演示页脚本 demo.js · 工具箱本体 toolbox/（模块化，多文件按序加载） -->
 <link rel="stylesheet" href="demo.css">
 </head>
 <body>
@@ -91,6 +91,20 @@
 <script src="demo.js"></script>
 <script src="https://www.google-analytics.com/analytics.js"></script>
 <script src="https://static.example-cdn.com/sentry.min.js"></script>
-<script src="toolbox.js"></script>
+<!-- 工具箱本体（普通 script 共享 window.BATB，零构建，file:// 可直接打开；顺序勿动）：
+     core 基础设施 → cats 分类 → widgets 结果组件 → ui 面板/弹层 → picker 拾取 → helpers 通用实现
+     → feats/* 功能按分类一文件（增删功能改这里对应的文件即可） → boot 收尾绑定事件 -->
+<script src="toolbox/core.js"></script>
+<script src="toolbox/cats.js"></script>
+<script src="toolbox/widgets.js"></script>
+<script src="toolbox/ui.js"></script>
+<script src="toolbox/picker.js"></script>
+<script src="toolbox/helpers.js"></script>
+<script src="toolbox/feats/info.js"></script>
+<script src="toolbox/feats/find.js"></script>
+<script src="toolbox/feats/style.js"></script>
+<script src="toolbox/feats/llm.js"></script>
+<script src="toolbox/feats/build.js"></script>
+<script src="toolbox/boot.js"></script>
 </body>
 </html>
