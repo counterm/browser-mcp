@@ -163,6 +163,7 @@ function openDetail(f){
   sq('#dpop-sub').textContent = f.mock ? '演示数据' : '';
   sq('#dpop-desc').innerHTML = f.desc;
   var b = sq('#dpop-body');
+  $('#dt-body', b).innerHTML = ''; /* 清空上一个功能的详情内容，避免切换时残留 */
   b.scrollTop = 0;
   dpop.classList.add('open');
   layoutDpop();

@@ -68,18 +68,17 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | [qr.js](../chrome-extension/toolbox/qr.js) | ~250 | 〔仅扩展版〕二维码生成：qrcode-generator 1.4.4（MIT）裁剪，Byte 模式 UTF-8 + 自动版本，canvas 自绘矩阵 | `B.QR` / `B.QR.make(text)` |
 | [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~140 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图（扩展桥逐屏 captureVisibleTab 拼接下载） | — |
 
-### 功能注册表 FEATS（原型 34 项，扩展落地版 36 项，按分类一文件）
+### 功能注册表 FEATS（原型 33 项，扩展落地版 35 项，按分类一文件）
 
 追加功能：打开对应分类文件，往 `B.register([...])` 数组插 `{id, cat, name, icon, star, desc, run}` 对象即可；llm 分类加 `grp:'copy'|'store'`，高级功能加 `adv:true`。
 
-**feats/info.js（提示，6 项）**
+**feats/info.js（提示，5 项）**
 
 | id | 功能 | 级 |
 |---|---|---|
 | `stack` | 技术栈指纹 | ★★★ |
 | `env` | 环境判定 | ★★ |
 | `health` | 页面健康度 | ★★ |
-| `forms` | 表单字段总览 | ★★★ |
 | `net` | 接口清单（轮询写 `B.ui.detailTimer`，clearDetail 统一清理） | ★★★ |
 | `sdk` | 第三方 SDK 盘点 | ★ |
 
@@ -122,7 +121,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `storeel` | store | 存入选中元素（`__BA_EL__`） | ★★ |
 | `a11y` | copy | a11y 修复建议 | ★ 高级 |
 
-**feats/build.js（开发产物，4 项）**
+**feats/build.js（开发产物，5 项）**
 
 | id | 功能 | 级 |
 |---|---|---|
@@ -130,6 +129,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `userscript` | 生成油猴脚本骨架 | ★★★ |
 | `crawler` | 爬虫代码生成（Python） | ★★ |
 | `record` | 操作录制 → 步骤（演示数据） | ★★ |
+| `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过） | ★★★ |
 
 **feats/capture.js（采集，2 项）**〔仅扩展版，原型未含〕
 

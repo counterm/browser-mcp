@@ -1,4 +1,4 @@
-/* 工具箱 · feats/info —— 「提示」分类：技术栈 / 环境 / 健康度 / 表单 / 接口 / SDK。
+/* 工具箱 · feats/info —— 「提示」分类：技术栈 / 环境 / 健康度 / 接口 / SDK。
    追加功能：往 B.register([...]) 数组里插一个 {id, cat, name, icon, star, desc, run} 对象即可。 */
 (function(B){
 if(!B) return;
@@ -43,27 +43,6 @@ B.register([
       ['JS 堆内存', mem ? (mem.usedJSHeapSize / 1048576).toFixed(1) + ' MB' : '—（浏览器不支持）'],
       ['事件监听器数', '—（仅 DevTools getEventListeners 可查）']
     ]));
-  }},
-{ id:'forms', cat:'info', name:'表单字段总览', icon:'form', star:3, desc:'列出全部 input/select/textarea 及校验规则',
-  run:function(b){
-    var rows = $$('input,select,textarea').filter(function(e){ return e.type !== 'hidden'; });
-    if(!rows.length){ b.appendChild(el('div', 'note', '本页没有可交互表单字段。')); return; }
-    var d = el('div', 'lst');
-    rows.forEach(function(e){
-      var label = '', lg = e.labels && e.labels[0];
-      if(lg) label = lg.textContent.trim();
-      label = label || e.placeholder || e.name || e.id || '（无标签）';
-      var rules = [];
-      if(e.required) rules.push('必填');
-      if(e.maxLength > 0) rules.push('≤' + e.maxLength);
-      if(e.pattern) rules.push('pattern');
-      if(e.readOnly) rules.push('只读');
-      if(e.disabled) rules.push('禁用');
-      d.appendChild(el('div', 'li',
-        '<span class="m">' + (e.tagName === 'TEXTAREA' ? 'textarea' : e.type || e.tagName.toLowerCase()) + '</span>' +
-        '<span class="u">' + esc(label) + (rules.length ? ' · ' + esc(rules.join(' / ')) : '') + '</span>'));
-    });
-    b.appendChild(d);
   }},
 { id:'net', cat:'info', name:'接口清单', icon:'share', star:3, desc:'记录页面发出的 fetch：URL、状态码、耗时',
   run:function(b){
