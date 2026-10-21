@@ -3,6 +3,10 @@
 > 原型为**零构建多文件模块**：演示页 3 个文件 + 工具箱本体 `toolbox/` 12 个文件。
 > 全部是普通 `<script>`，共享命名空间 `window.BATB`（不用 ES module，file:// 可直接打开）。
 >
+> **扩展落地版**：同一套模块已落入 [chrome-extension/toolbox/](../chrome-extension/toolbox/)，
+> 由 background.js 按白名单经 `chrome.scripting` 注入页面主世界（MAIN）；
+> 本目录保留为设计原型与演示页，两处模块结构保持一致，改动请两边同步。
+>
 > | 文件 | 行数 | 职责 |
 > |---|---|---|
 > | [toolbox-proto.html](toolbox-proto.html) | ~110 | **演示页壳**：模拟后台页面 HTML + 按序引入 12 个工具箱模块（97–108 行） |
@@ -143,7 +147,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | 结果组件（卡片样式） | widgets.js |
 | 复制 / 存储通道 | `B.u.copyText`（core.js）；存储功能写 `window.__BA_*` + `localStorage` |
 | 快捷键 / Esc / 外点收起 | boot.js 末三段 |
-| 位置记忆 / 拖拽 | boot.js；落扩展换 `chrome.storage` |
+| 位置记忆 / 拖拽 | boot.js；扩展版仍用 localStorage（按站点记忆） |
 | 撤销栈 | ui.js `pushUndo`/`refreshUndo` + 各功能的 `pushUndo` 调用 |
-| 白名单门控演示 | demo.js `d-wl`；真实门控在扩展版做 |
-| 防重复注入 | core.js 开头 `if(window.BATB) return` |
+| 白名单门控 | 演示：demo.js `d-wl`；扩展版：background.js `syncToolbox`（注入/隐藏）+ core.js 监听 `batb:gate` |
+| 防重复注入 | core.js 开头 `if(window.BATB) return`；扩展版各模块另有自身导出守卫 + `B.register` 按 id 去重 |

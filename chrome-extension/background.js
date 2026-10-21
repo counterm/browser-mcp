@@ -136,7 +136,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-/** 配置变更后重算：不再命中的断开；新命中的补注册（含存量页面） */
+/** 配置变更后重算：不再命中的断开；新命中的补注册（含存量页面）；工具箱同步注入/显隐 */
 async function applyFilterChange() {
   for (const [tabId, e] of [...tabs]) {
     if (URLFilter.isBlocked(e.url, filterCfg)) dropEntry(tabId, 'filter: not in whitelist');
@@ -146,6 +146,9 @@ async function applyFilterChange() {
     if (!t.id || !t.url || !/^https?:/i.test(t.url) || tabs.has(t.id)) continue;
     if (URLFilter.isBlocked(t.url, filterCfg)) continue;
     ensureEntry(t.id, { url: t.url, title: t.title || '' });
+  }
+  for (const t of all) {
+    if (t.id && (t.url || t.pendingUrl)) syncToolbox(t.id, t.url || t.pendingUrl);
   }
 }
 
@@ -210,6 +213,54 @@ async function handleFilterMessage(msg, sendResponse) {
       sendResponse({ ok: true, verdict: verdict() });
       return;
     }
+  }
+}
+
+/* ============ 页面工具箱（docs/toolbox 原型的扩展落地） ============
+ * 白名单门控注入：页面命中白名单后，经 chrome.scripting 把 toolbox/ 下 12 个模块
+ * 注入页面主世界（MAIN world —— React fiber、fetch 拦截、window.__BA_* 都在页面上下文才可见），
+ * 不受页面 CSP 限制。MAIN world 收不到扩展消息，显隐经 DOM 事件 batb:gate 同步（core.js 监听）。
+ */
+const TOOLBOX_FILES = [
+  'toolbox/core.js', 'toolbox/cats.js', 'toolbox/widgets.js', 'toolbox/ui.js',
+  'toolbox/picker.js', 'toolbox/helpers.js',
+  'toolbox/feats/info.js', 'toolbox/feats/find.js', 'toolbox/feats/style.js',
+  'toolbox/feats/llm.js', 'toolbox/feats/build.js', 'toolbox/boot.js',
+];
+
+const isToolboxUrl = (u) =>
+  /^(https?|file):/i.test(u || '') && !/^https?:\/\/(127\.0\.0\.1|localhost):8766/i.test(u);
+
+/** 探测页面主世界：2=已注入 1=可注入(body 就绪) 0=DOM 未就绪 -1=不可注入（chrome:// 等） */
+async function toolboxProbe(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId }, world: 'MAIN',
+      func: () => (window.BATB && window.BATB.ui) ? 2 : (document.body ? 1 : 0),
+    });
+    return (r && r.result) || 0;
+  } catch { return -1; }
+}
+
+/** 按白名单同步某 tab 的工具箱：未注入则注入；已注入则同步显隐（配置变更即时生效） */
+async function syncToolbox(tabId, url) {
+  if (!isToolboxUrl(url)) return;
+  try {
+    const st = await toolboxProbe(tabId);
+    if (st === -1 || st === 0) return;
+    const allowed = !URLFilter.isBlocked(url, filterCfg);
+    if (st === 2) {
+      await chrome.scripting.executeScript({
+        target: { tabId }, world: 'MAIN',
+        func: (a) => window.dispatchEvent(new CustomEvent('batb:gate', { detail: { allowed: a } })),
+        args: [allowed],
+      });
+    } else if (allowed) {
+      await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: TOOLBOX_FILES });
+      log(`toolbox injected tab${tabId}: ${url}`);
+    }
+  } catch (err) {
+    log(`toolbox sync tab${tabId} failed: ${(err && err.message) || err}`);
   }
 }
 
@@ -435,6 +486,12 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   if ((change.url || change.title) && e.ws && e.ws.readyState === 1) {
     sendWS(e, { type: 'hb', url: e.url, title: e.title });
   }
+});
+
+/* 工具箱：页面加载完成 / SPA 路由变化时按白名单同步（注入或显隐） */
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  const url = change.url || (change.status === 'complete' && tab && tab.url);
+  if (url) syncToolbox(tabId, url);
 });
 
 chrome.tabs.onActivated.addListener(() => updateBadge());
