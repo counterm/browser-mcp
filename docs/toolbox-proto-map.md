@@ -6,6 +6,8 @@
 > **扩展落地版**：同一套模块已落入 [chrome-extension/toolbox/](../chrome-extension/toolbox/)，
 > 由 background.js 按白名单经 `chrome.scripting` 注入页面主世界（MAIN）；
 > 本目录保留为设计原型与演示页，两处模块结构保持一致，改动请两边同步。
+> **⚠️ 落地版扩展（原型未含）**：`toolbox/qr.js`（二维码生成）与 `toolbox/feats/capture.js`（「采集」分类）——
+> 整页截图依赖扩展桥（content.js ↔ background 的 captureVisibleTab），原型演示页不可用。
 >
 > | 文件 | 行数 | 职责 |
 > |---|---|---|
@@ -20,6 +22,7 @@
 
 ```
 core → cats → widgets → ui → picker → helpers → feats/{info,find,style,llm,build} → boot
+（扩展落地版在 helpers 之后插入 qr.js，feats 末尾多一个 capture.js）
 ```
 
 后加载的模块可解构引用先加载模块导出的东西；跨模块调用一律走 `B.*`（运行时取值，晚绑定安全）。
@@ -56,14 +59,16 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | 模块 | 行数 | 职责 | 导出 |
 |---|---|---|---|
 | [core.js](toolbox/core.js) | ~205 | 命名空间、基础工具、图标、状态与 `#ba-toolbox-host` 挂载、Shadow 样式 `WCSS`、页面注入样式、功能注册器。**必须最先加载** | `B.u` `$/$$/el/esc/clamp/copyText/sq/sqa`、`B.I/B.ICONS`、`B.state`、`B.host/B.shadow`、`B.style` pageStyle+STYLE、`B.register` |
-| [cats.js](toolbox/cats.js) | ~15 | 五分类定义（llm 带 copy/store 子组） | `B.CATS` |
+| [cats.js](toolbox/cats.js) | ~15 | 分类定义：原型五分类（llm 带 copy/store 子组），扩展落地版另有 capture「采集」 | `B.CATS` |
 | [widgets.js](toolbox/widgets.js) | ~38 | 结果组件 + toast（自带 DOM） | `B.w` codeBox/kv/note/btn/badge/scoreBadge/toast |
 | [ui.js](toolbox/ui.js) | ~210 | FAB/面板/Popover/详情浮层（dpop）DOM、三层布局与联动、开合、列表渲染、详情生命周期、撤销栈、关于页 | `B.ui`（fab/panel/pop/dpop、layout*、open/close 系列、renderList、pushUndo、detailTimer…） |
 | [picker.js](toolbox/picker.js) | ~94 | 选择器工具 + 元素拾取器 | `B.sel` cssPath/bestSelector/SCORE_RULES/scoreSelector/xpathOf、`B.pick`、`B.ensurePicked` |
 | [helpers.js](toolbox/helpers.js) | ~61 | fetch 拦截（接口清单数据源）+ 通用实现 | `B.NET`、`B.detectStack/B.REDACT/B.redact/B.skeleton/B.maxDepth/B.flashEl` |
 | [boot.js](toolbox/boot.js) | ~91 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起）。**必须最后加载** | — |
+| [qr.js](../chrome-extension/toolbox/qr.js) | ~250 | 〔仅扩展版〕二维码生成：qrcode-generator 1.4.4（MIT）裁剪，Byte 模式 UTF-8 + 自动版本，canvas 自绘矩阵 | `B.QR` / `B.QR.make(text)` |
+| [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~140 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图（扩展桥逐屏 captureVisibleTab 拼接下载） | — |
 
-### 功能注册表 FEATS（34 项，按分类一文件）
+### 功能注册表 FEATS（原型 34 项，扩展落地版 36 项，按分类一文件）
 
 追加功能：打开对应分类文件，往 `B.register([...])` 数组插 `{id, cat, name, icon, star, desc, run}` 对象即可；llm 分类加 `grp:'copy'|'store'`，高级功能加 `adv:true`。
 
@@ -125,6 +130,13 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `userscript` | 生成油猴脚本骨架 | ★★★ |
 | `crawler` | 爬虫代码生成（Python） | ★★ |
 | `record` | 操作录制 → 步骤（演示数据） | ★★ |
+
+**feats/capture.js（采集，2 项）**〔仅扩展版，原型未含〕
+
+| id | 功能 | 级 |
+|---|---|---|
+| `qr` | 网址二维码（qr.js 纯本地生成，下载 PNG / 复制链接） | ★★ |
+| `fullshot` | 整页截图（扩展桥 `batb:bridge` → content.js → background `captureVisibleTab`，逐屏滚动截取拼接，自动下载 PNG） | ★★★ |
 
 ### ui.js 内部要点（三层弹窗联动）
 

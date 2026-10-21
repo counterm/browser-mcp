@@ -308,4 +308,27 @@
   }
   W.addEventListener('popstate', () => sendMsg({ type: 'event', name: 'nav', ...pageInfo() }));
   W.addEventListener('beforeunload', () => sendMsg({ type: 'bye' }));
+
+  /* ============ 5. 工具箱桥：MAIN world ↔ background（整页截图等扩展级能力） ============
+   * 工具箱注入在页面主世界，收不到扩展消息；用 DOM 事件当桥：
+   * batb:bridge（请求）→ runtime 消息 → background 执行 → batb:bridge:res（回传结果）。 */
+  window.addEventListener('batb:bridge', (ev) => {
+    const { id, action, params } = ev.detail || {};
+    if (id == null || !action) return;
+    const respond = (res) => window.dispatchEvent(new CustomEvent('batb:bridge:res', {
+      detail: res
+        ? { id, ok: !!res.ok, data: res.data ?? null, error: res.error || null }
+        : { id, ok: false, error: '扩展未响应，请刷新页面后重试' },
+    }));
+    try {
+      chrome.runtime.sendMessage({ type: 'tb:' + action, ...params })
+        .then(respond)
+        .catch((e) => window.dispatchEvent(new CustomEvent('batb:bridge:res',
+          { detail: { id, ok: false, error: String((e && e.message) || e) } })));
+    } catch {
+      // 扩展重载后旧 content.js 的 runtime 上下文失效
+      window.dispatchEvent(new CustomEvent('batb:bridge:res',
+        { detail: { id, ok: false, error: '扩展已重载，请刷新页面后重试' } }));
+    }
+  });
 })();

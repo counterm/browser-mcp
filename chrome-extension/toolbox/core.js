@@ -1,6 +1,6 @@
 /* 工具箱 · core —— 命名空间 / 基础工具 / 图标 / 挂载 / 样式。必须最先加载。
    模块化说明：全部为普通脚本（零构建），共享命名空间 window.BATB；功能文件调用 B.register([...]) 注册。
-   加载顺序：core → cats → widgets → ui → picker → helpers → feats/* → boot
+   加载顺序：core → cats → widgets → ui → picker → helpers → qr → feats/* → boot
    扩展落地（设计原型见 docs/toolbox/）：由 background.js 按白名单经 chrome.scripting
    注入页面主世界（MAIN，React fiber / fetch 拦截 / window.__BA_* 才可见）；
    白名单变更经 DOM 事件 batb:gate 控制整个宿主显隐（MAIN world 收不到扩展消息）。 */
@@ -55,7 +55,10 @@ B.ICONS = {
   shield:'<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',
   clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
   person:'<circle cx="12" cy="7" r="3"/><path d="M5 20a7 7 0 0114 0"/>',
-  undo:'<path d="M4 12a8 8 0 0113.7-5.7L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 01-13.7 5.7L4 16"/><path d="M4 20v-4h4"/>'
+  undo:'<path d="M4 12a8 8 0 0113.7-5.7L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 01-13.7 5.7L4 16"/><path d="M4 20v-4h4"/>',
+  camera:'<path d="M3 8a2 2 0 012-2h2l2-2h6l2 2h2a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><circle cx="12" cy="13" r="3.5"/>',
+  image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5L5 19"/>',
+  qr:'<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13 13h3v3h-3zM19 13h2v2h-2zM13 19h3v2h-3zM19 19h2"/>'
 };
 B.I = function(name, size){ return '<svg viewBox="0 0 24 24" width="'+(size||16)+'" height="'+(size||16)+'" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(B.ICONS[name]||'')+'</svg>'; };
 

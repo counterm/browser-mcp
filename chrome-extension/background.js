@@ -217,15 +217,15 @@ async function handleFilterMessage(msg, sendResponse) {
 }
 
 /* ============ 页面工具箱（docs/toolbox 原型的扩展落地） ============
- * 白名单门控注入：页面命中白名单后，经 chrome.scripting 把 toolbox/ 下 12 个模块
+ * 白名单门控注入：页面命中白名单后，经 chrome.scripting 把 toolbox/ 下 14 个模块
  * 注入页面主世界（MAIN world —— React fiber、fetch 拦截、window.__BA_* 都在页面上下文才可见），
  * 不受页面 CSP 限制。MAIN world 收不到扩展消息，显隐经 DOM 事件 batb:gate 同步（core.js 监听）。
  */
 const TOOLBOX_FILES = [
   'toolbox/core.js', 'toolbox/cats.js', 'toolbox/widgets.js', 'toolbox/ui.js',
-  'toolbox/picker.js', 'toolbox/helpers.js',
+  'toolbox/picker.js', 'toolbox/helpers.js', 'toolbox/qr.js',
   'toolbox/feats/info.js', 'toolbox/feats/find.js', 'toolbox/feats/style.js',
-  'toolbox/feats/llm.js', 'toolbox/feats/build.js', 'toolbox/boot.js',
+  'toolbox/feats/llm.js', 'toolbox/feats/build.js', 'toolbox/feats/capture.js', 'toolbox/boot.js',
 ];
 
 const isToolboxUrl = (u) =>
@@ -438,6 +438,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     sendResponse({ ok: true });
     return;
+  }
+  if (msg && msg.type === 'tb:shot') {
+    // 工具箱桥「整页截图」：单屏截取（页面侧负责滚动编排与拼接）；结果必须包在 data 字段（桥协议只透传 data）
+    chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' })
+      .then((dataUrl) => sendResponse({ ok: true, data: { dataUrl } }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
   }
   if (typeof msg.type === 'string' && msg.type.startsWith('filter:')) {
     handleFilterMessage(msg, sendResponse); // 异步 sendResponse

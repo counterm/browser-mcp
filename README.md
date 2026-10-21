@@ -25,8 +25,8 @@
 | ├ `filter.js` | 白名单核心：配置存储、eTLD+1 主域名提取、匹配引擎（SW/popup/options 共用） |
 | ├ `popup.html` / `popup.js` | 工具栏弹窗：接入总开关、当前页白名单状态、一键加入/移出 |
 | ├ `options.html` / `options.js` | 完整配置页：域名列表与正则规则的增删改查、导入导出、正则实时测试面板 |
-| ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等 17 种） |
-| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：12 个零构建模块，background 按白名单注入页面主世界，五分类 34 项功能 |
+| ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等 17 种）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background） |
+| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
 | `build/` | 打包产物与测试密钥：`make-test-key.mjs`（生成测试私钥）、`debug-extension.pem`、`chrome-extension.crx` |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
@@ -192,9 +192,10 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 
 按白名单注入的页面内工具面板，设计原型见 `docs/toolbox/`（架构图 `docs/toolbox-proto-map.md`）：
 
-- **注入**：页面命中白名单后，background 经 `chrome.scripting` 把 `chrome-extension/toolbox/` 下 12 个模块注入**页面主世界**（MAIN world）——React fiber 反查、fetch 拦截、`window.__BA_*` 都要在页面上下文才可见；注入不受页面 CSP 限制
+- **注入**：页面命中白名单后，background 经 `chrome.scripting` 把 `chrome-extension/toolbox/` 下 14 个模块注入**页面主世界**（MAIN world）——React fiber 反查、fetch 拦截、`window.__BA_*` 都要在页面上下文才可见；注入不受页面 CSP 限制
 - **门控即时生效**：白名单配置变更后，已注入页面经 DOM 事件 `batb:gate` 同步显隐——移出白名单立即隐藏，重新命中自动恢复；未注入过的命中页面自动补注入
-- **入口**：右下角圆形 FAB（可拖拽、位置记忆、`Alt+Shift+D` 唤起），五分类 34 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物）
+- **入口**：右下角圆形 FAB（可拖拽、位置记忆、`Alt+Shift+D` 唤起），六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
+- **采集**：「网址二维码」把当前网址纯本地生成二维码（扫码在手机打开，可下载 PNG / 复制链接，内嵌 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) MIT 裁剪版）；「整页截图」滚动逐屏截取、拼接为长图并自动下载 PNG——经**扩展桥**（content.js 中继 `batb:bridge` → background `captureVisibleTab`）实现，需 content.js 与扩展版本一致（更新扩展后刷新页面）
 - **发给 LLM 的存储通道**：结果写 `localStorage["ba:ctx"]` / `["ba:el"]`，LLM 经 broker 的 `storage` 动作自取（`window.__BA_*` 仅页面主世界可见，跨进程读取请用 storage）
 - 增删功能：改 `toolbox/feats/<分类>.js` 里 `B.register([...])` 数组即可；模块清单/加载顺序见原型地图
 
@@ -240,5 +241,6 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 | 油猴版某些页面连不上 | 看控制台 `[bridge]` 日志，若显示"降级为 HTTP 长轮询"即 CSP 拦截，属正常；或改用扩展版 |
 | `file://` 页面不上线 | 扩展详情开启「允许访问文件网址」；油猴需在设置里允许访问文件 |
 | 页面右下角没出现工具箱 FAB | 页面是否在白名单（popup 查看命中）；扩展详情页看 Service Worker 报错；`file://` 需「允许访问文件网址」 |
+| 工具箱「整页截图」报扩展桥无响应 | 扩展刚更新过、页面里的 content.js 还是旧版（没有桥），刷新页面即可；或扩展详情页看 Service Worker 报错 |
 | `eval` 报 CSP / unsafe-eval 错误 | 属正常（页面 CSP 限制）。按「eval 与 CSP」章节开启扩展的「允许用户脚本」开关；或改用其他 DOM 动作 |
 | `/pages` 里 `eval_mode` 一直是 `fallback` | userScripts 需要 Chrome ≥ 135 且手动开启「允许用户脚本」开关；`chrome://extensions` → Page Bridge → 详情里找 |

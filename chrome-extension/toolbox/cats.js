@@ -11,6 +11,7 @@ B.CATS = [
       { id:'copy',  name:'复制 · 人工粘贴给 LLM' },
       { id:'store', name:'存储 · 写入浏览器变量，LLM 自取' }
   ]},
-  { id:'build', name:'开发产物',   icon:'filecode',color:'#ec4899', desc:'能跑起来的脚本 / 指令' }
+  { id:'build', name:'开发产物',   icon:'filecode',color:'#ec4899', desc:'能跑起来的脚本 / 指令' },
+  { id:'capture', name:'采集',    icon:'camera',  color:'#06b6d4', desc:'网址二维码 · 整页截图下载' }
 ];
 })(window.BATB);

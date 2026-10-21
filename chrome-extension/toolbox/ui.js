@@ -190,7 +190,7 @@ function openAbout(){
   pop.classList.add('open');
   var list = sq('#pop-list');
   list.innerHTML =
-    '<div class="d" style="padding:4px 6px">交互：<b>右下角圆形 FAB</b>（可拖拽、记忆位置、Alt+Shift+D 唤起）→ 点击展开<b>五分类面板</b> → 悬停/点击分类弹出 <b>Popover</b> 功能列表 → 点击功能在侧边<b>详情浮层</b>查看结果（列表保持可点）。<br><br>' +
+    '<div class="d" style="padding:4px 6px">交互：<b>右下角圆形 FAB</b>（可拖拽、记忆位置、Alt+Shift+D 唤起）→ 点击展开<b>六分类面板</b> → 悬停/点击分类弹出 <b>Popover</b> 功能列表 → 点击功能在侧边<b>详情浮层</b>查看结果（列表保持可点）。<br><br>' +
     '门控：本工具箱按<b>站点白名单</b>注入 —— background 检测页面命中白名单后经 chrome.scripting 注入页面主世界（MAIN）；配置变更即时生效，移出白名单立即隐藏，重新命中自动恢复。<br><br>' +
     '交付模型：<b>发给 LLM</b> 拆成两条通道 —— <b>复制</b>（结果进剪贴板，人工粘贴进对话）与 <b>存储</b>（写入 localStorage，LLM 经 broker 的 storage / eval 自取）；能跑起来的脚本 / 指令归入 <b>开发产物</b>。<br><br>' +
     '设计原型与模块地图见仓库 docs/toolbox/ 与 docs/toolbox-proto-map.md。</div>';
