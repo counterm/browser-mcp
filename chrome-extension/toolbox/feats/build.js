@@ -43,13 +43,14 @@ B.register([
       b.appendChild(codeBox(code));
     });
   }},
-{ id:'crawler', cat:'build', name:'爬虫代码生成', icon:'code', star:2, desc:'表格 / 列表 → Python 提取脚本',
+{ id:'crawler', cat:'build', name:'爬虫代码生成', icon:'code', star:2, desc:'表格 / 列表 → Python 提取脚本（自动识别 SPA）',
   run:function(b){
     var tb = document.querySelector('table');
     var sel = tb ? bestSelector(tb) : 'table';
+    var url = location.origin + location.pathname;
     var code =
 'import requests\nfrom bs4 import BeautifulSoup\n\n' +
-'URL = "' + (location.origin + location.pathname) + '"\n' +
+'URL = "' + url + '"\n' +
 'html = requests.get(URL, timeout=10, headers={"User-Agent": "..."}).text\n' +
 'soup = BeautifulSoup(html, "html.parser")\n\n' +
 'rows = []\n' +
@@ -58,7 +59,29 @@ B.register([
 '    if cells:\n        rows.append(cells)\n\n' +
 'print(rows)  # 或 csv.writer 落盘';
     b.appendChild(codeBox(code));
-    b.appendChild(note('选择器由页面表格自动推导；可按「Selector 稳定性评分」结果替换。'));
+
+    var stack = (B.detectStack && B.detectStack()) || {};
+    var fw = Object.keys(stack).filter(function(k){ return stack[k] && /React|Vue|Angular|Svelte|Next|Nuxt/.test(k); });
+    if(fw.length){
+      var pw =
+'from playwright.sync_api import sync_playwright\n\n' +
+'URL = "' + url + '"\n' +
+'rows = []\n' +
+'with sync_playwright() as p:\n' +
+'    b = p.chromium.launch(headless=True)\n' +
+'    pg = b.new_page()\n' +
+'    pg.goto(URL, wait_until="networkidle")\n' +
+"    for tr in pg.query_selector_all('" + sel + " tbody tr'):\n" +
+'        cells = [c.inner_text() for c in tr.query_selector_all("td")]\n' +
+'        if cells: rows.append(cells)\n' +
+'    b.close()\n' +
+'print(rows)';
+      b.appendChild(el('div', 'grp-h', '客户端渲染（' + fw.join('/') + '）· 推荐 Playwright'));
+      b.appendChild(codeBox(pw));
+      b.appendChild(note('检测到 ' + fw.join('/') + '：页面为客户端渲染，requests 拉到的 HTML 是空壳、抓不到表格数据。上面这份 Playwright 脚本会真正执行 JS 后再读 DOM，才能取到渲染后的内容。'));
+    } else {
+      b.appendChild(note('选择器由页面表格自动推导；可按「Selector 稳定性评分」结果替换。适用于 SSR / 静态页。'));
+    }
   }},
 { id:'record', cat:'build', name:'操作录制 → 步骤', icon:'clock', star:2, desc:'记录点击序列，导出可重放步骤', mock:true,
   run:function(b){

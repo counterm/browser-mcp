@@ -6,11 +6,40 @@ var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = 
 var pick = B.pick, ensurePicked = B.ensurePicked;
 var host = B.host, state = B.state, flashEl = B.flashEl;
 
+/* Vue 事件反查：从组件实例的 vnode.props 取 onXxx 事件 handler + setupState 方法名 */
+function vueInfo(e){
+  var inst = e && e.__vueParentComponent;
+  if(!inst) return null;
+  var name = (inst.type && (inst.type.name || inst.type.__name)) || 'Anonymous';
+  var props = (inst.vnode && inst.vnode.props) || {};
+  var handlers = [], methods = [];
+  Object.keys(props).forEach(function(k){
+    if(/^on[A-Z]/.test(k) && typeof props[k] === 'function') handlers.push([k, props[k]]);
+  });
+  var ss = inst.setupState || {};
+  Object.keys(ss).forEach(function(k){ if(typeof ss[k] === 'function') methods.push(k); });
+  return { name: name, handlers: handlers, methods: methods };
+}
+/* 生产构建下 Vue 不暴露 __vueParentComponent，用 scoped data-v- / 库类名兜底识别 */
+function hasVueMark(e){
+  var n = e;
+  while(n && n.nodeType === 1){
+    if(n.attributes){
+      for(var i = 0; i < n.attributes.length; i++){ if(n.attributes[i].name.indexOf('data-v-') === 0) return true; }
+    }
+    if(n.matches && n.matches('[class*="el-"]')) return true;
+    n = n.parentElement;
+  }
+  return false;
+}
+
 B.register([
 { id:'picker', cat:'find', name:'元素拾取器', icon:'crosshair', star:3, desc:'hover 高亮 + 点击锁定，输出 4 种写法',
   run:function(b){
-    b.appendChild(el('div', 'note', '点击下方按钮进入拾取模式：移动高亮、点击锁定、Esc 取消。'));
+    b.appendChild(el('div', 'note', '点击下方按钮进入拾取模式：工具箱暂时收起，移动高亮、点击锁定后自动恢复；Esc 取消。'));
+    var out = el('div'); /* 结果区：每次拾取先清空上一次结果，只保留当前这次 */
     b.appendChild(btn('开始拾取', function(){
+      out.textContent = '';
       pick().then(function(e){
         if(!e) return;
         state.picked = e;
@@ -31,9 +60,10 @@ B.register([
         var box = el('div');
         box.appendChild(el('div', 'd', '已锁定：<b>' + esc(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')) + '</b> ' + scoreBadge(scoreSelector(sel))));
         box.appendChild(tabs); box.appendChild(pre);
-        b.appendChild(box);
+        out.appendChild(box);
       });
     }, 'pri'));
+    b.appendChild(out);
   }},
 { id:'selrank', cat:'find', name:'Selector 稳定性评分', icon:'target', star:3, desc:'给生成的 selector 打分并标色',
   run:function(b){
@@ -70,20 +100,32 @@ B.register([
     go.onclick = run;
     inp.onkeydown = function(ev){ if(ev.key === 'Enter') run(); };
   }},
-{ id:'eventlook', cat:'find', name:'事件反查', icon:'code', star:3, desc:'这个按钮绑定了什么 handler',
+{ id:'eventlook', cat:'find', name:'事件反查', icon:'code', star:3, desc:'这个按钮绑定了什么 handler（React / Vue）',
   run:function(b){
     ensurePicked().then(function(e){
       if(!e) return;
+      /* React：props 直接挂在 DOM 节点上 */
       var pk = Object.keys(e).filter(function(k){ return k.indexOf('__reactProps$') === 0; })[0];
-      var fk = Object.keys(e).filter(function(k){ return k.indexOf('__reactFiber$') === 0; })[0];
       if(pk && e[pk].onClick){
         b.appendChild(el('div', 'd', '找到 React props 上的 <b>onClick</b>：'));
         b.appendChild(codeBox(e[pk].onClick.toString()));
         b.appendChild(note('把 handler 源码整段喂给 LLM，比截图描述强十倍。'));
-      } else {
-        b.appendChild(el('div', 'd', '该元素上未找到框架事件后门' + (fk ? '' : '（无 __reactProps$ / __vue__ / jQuery 事件）') + '。'));
-        b.appendChild(note('原型页的「导出订单」按钮挂了演示用的 __reactProps$abc123.onClick，可拾取它查看真实代码路径。'));
+        return;
       }
+      /* Vue：事件以 onXxx 挂在组件实例的 vnode.props 上 */
+      var vi = vueInfo(e);
+      if(vi && (vi.handlers.length || vi.methods.length)){
+        b.appendChild(el('div', 'd', 'Vue 组件 <b>' + esc(vi.name) + '</b> 上绑定的事件 / 方法：'));
+        vi.handlers.forEach(function(h){
+          b.appendChild(el('div', 'd', esc(h[0])));
+          b.appendChild(codeBox(h[1].toString()));
+        });
+        if(vi.methods.length) b.appendChild(el('div', 'd', 'setupState 方法：' + esc(vi.methods.join(', '))));
+        b.appendChild(note('Vue 把事件以 onXxx 形式挂在组件实例的 vnode.props 上；把 handler 源码整段喂给 LLM，比截图描述强十倍。'));
+        return;
+      }
+      b.appendChild(el('div', 'd', '该元素上未找到框架事件后门（无 __reactProps$ / __vueParentComponent / jQuery 事件）。'));
+      b.appendChild(note('原型页的「导出订单」按钮挂了演示用的 __reactProps$abc123.onClick，可拾取它查看真实代码路径；Vue 站点拾取一个组件（其 vnode.props 上挂了 onXxx 事件）即可看到 handler 源码。'));
     });
   }},
 { id:'compname', cat:'find', name:'组件名定位', icon:'layers', star:3, desc:'从 React fiber / Vue 实例拿组件名',
@@ -97,6 +139,8 @@ B.register([
         b.appendChild(note('原型页「导出订单」按钮挂了演示 fiber，组件名 ExportButton。'));
       } else if(vk){
         b.appendChild(kv([['组件名', badge(e[vk].type.name || e[vk].type.__name || 'Vue 组件', 'g')]]));
+      } else if(hasVueMark(e)){
+        b.appendChild(el('div', 'note', '检测到 Vue 作用域标记（data-v- / el-），但生产构建未暴露组件名；组件名仅在开发构建可见。'));
       } else {
         b.appendChild(el('div', 'note', '未检出 React fiber / Vue 实例。'));
       }

@@ -58,6 +58,7 @@ B.ICONS = {
   undo:'<path d="M4 12a8 8 0 0113.7-5.7L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 01-13.7 5.7L4 16"/><path d="M4 20v-4h4"/>',
   camera:'<path d="M3 8a2 2 0 012-2h2l2-2h6l2 2h2a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><circle cx="12" cy="13" r="3.5"/>',
   image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5L5 19"/>',
+  crop:'<path d="M7 2v13a2 2 0 002 2h13"/><path d="M2 7h13a2 2 0 012 2v13"/>',
   qr:'<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13 13h3v3h-3zM19 13h2v2h-2zM13 19h3v2h-3zM19 19h2"/>',
   save:'<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>'
 };
@@ -184,9 +185,10 @@ pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-ra
 .coach::after{content:"";position:absolute;right:-5px;top:50%;margin-top:-5px;width:10px;height:10px;background:#111827;transform:rotate(45deg)}
 .coach.hide{display:none}
 /* 拾取器 */
-.picker-ov{position:fixed;inset:0;z-index:50;cursor:crosshair;background:rgba(2,6,23,.18)}
-.picker-box{position:fixed;z-index:51;border:1.5px solid #f59e0b;background:rgba(245,158,11,.14);border-radius:3px;pointer-events:none;display:none;box-shadow:0 0 0 9999px rgba(2,6,23,.06)}
-.picker-tip{position:fixed;z-index:52;background:#0f172a;color:#fbbf24;font:11px ui-monospace,monospace;border:1px solid rgba(245,158,11,.4);border-radius:7px;padding:4px 9px;pointer-events:none;display:none;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick-hide{display:none!important} /* 拾取期间临时隐藏工具箱 UI（FAB/面板/列表/详情/撤销栈） */
+.picker-ov{position:fixed;inset:0;z-index:50;background:rgba(2,6,23,.18);pointer-events:none}
+.picker-box{position:fixed;z-index:2147483601;border:1.5px solid #f59e0b;background:rgba(245,158,11,.14);border-radius:3px;pointer-events:none;display:none;box-shadow:0 0 0 9999px rgba(2,6,23,.06)}
+.picker-tip{position:fixed;z-index:2147483602;background:#0f172a;color:#fbbf24;font:11px ui-monospace,monospace;border:1px solid rgba(245,158,11,.4);border-radius:7px;padding:4px 9px;pointer-events:none;display:none;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (prefers-reduced-motion:reduce){.fab,.panel,.pop,.toast,.cat{transition:none!important}}
 `;
 var styleEl = document.createElement('style');
@@ -202,6 +204,16 @@ B.style = {
     flash:'[data-ba-flash]{animation:baflash .9s ease 2}@keyframes baflash{0%,100%{outline:none}50%{outline:2px solid rgba(239,68,68,.9);outline-offset:1px}}',
     sel:'*{user-select:text!important;-webkit-user-select:text!important}'
   }
+};
+
+/* ---------- 诊断日志：环形写入 localStorage["ba:diaglog"]（按站点），供用户 copy 后反馈 ---------- */
+B.dlog = function(tag, msg){
+  try{
+    var k = 'ba:diaglog', arr = JSON.parse(localStorage.getItem(k) || '[]');
+    arr.push('[' + new Date().toISOString().slice(11, 23) + '] ' + tag + ': ' + msg);
+    if(arr.length > 60) arr = arr.slice(-60);
+    localStorage.setItem(k, JSON.stringify(arr));
+  }catch(e){}
 };
 
 /* ---------- 功能注册 ---------- */

@@ -236,6 +236,26 @@
       setTimeout(() => { el.style.cssText = old; }, 2000);
       return 'highlighted for 2s';
     },
+
+    // 接口调用查询（LLM 查看协议 netlog，详见 docs/spec-net-protocol.md）：
+    // 转发给页面主世界的捕获层 capture-main.js——eval 走 USER_SCRIPT/ISOLATED world，
+    // 看不到 MAIN world 的 __BATB_NET__，必须经 DOM 事件桥（batb:bridge 的逆向）
+    netlog: (params) => new Promise((resolve, reject) => {
+      const qid = Math.random().toString(36).slice(2);
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('接口捕获层无响应（扩展更新后未刷新页面？请刷新后重试）'));
+      }, 15000);
+      function onRes(ev) {
+        const d = ev.detail;
+        if (!d || d.id !== qid) return;
+        cleanup();
+        if (d.ok) resolve(d.data); else reject(new Error(d.error || 'netlog 调用失败'));
+      }
+      function cleanup() { clearTimeout(timer); W.removeEventListener('batb:netq:res', onRes); }
+      W.addEventListener('batb:netq:res', onRes);
+      W.dispatchEvent(new CustomEvent('batb:netq', { detail: { id: qid, params: params || {} } }));
+    }),
   };
 
   function serialize(v, depth = 0) {

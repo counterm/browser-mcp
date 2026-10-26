@@ -15,15 +15,39 @@ var NET = B.NET = [];
       function(e){ NET.push({ m:m, u:u, s:'ERR', ms:Math.round(performance.now()-t0) }); throw e; });
   };
 })();
+/* XHR 拦截：覆盖 axios 等基于 XMLHttpRequest 的请求（原型包裹，不影响 instanceof） */
+(function(){
+  var p = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+  if(!p) return;
+  var oOpen = p.open, oSend = p.send;
+  p.open = function(method, url){ this.__ba_m = (method || 'GET').toUpperCase(); this.__ba_u = url || ''; return oOpen.apply(this, arguments); };
+  p.send = function(){
+    var self = this, t0 = performance.now();
+    function rec(){
+      self.removeEventListener('loadend', rec);
+      NET.push({ m: self.__ba_m || 'GET', u: self.__ba_u || '', s: self.status || 'ERR', ms: Math.round(performance.now() - t0) });
+    }
+    this.addEventListener('loadend', rec);
+    return oSend.apply(this, arguments);
+  };
+})();
 
 /* ---------- 通用实现 ---------- */
 B.detectStack = function(){
   var hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   var any = document.querySelector('*');
   var v3 = any && any.__vueParentComponent, v2 = $$('*').filter(function(e){ return e.__vue__; })[0];
+  /* 生产构建会摇树掉 __vueParentComponent / __VUE__，用库类名 / scoped 作用域标记兜底 */
+  var elp = document.querySelector('.el-button,.el-table,.el-input,.el-menu,.el-dialog,.el-form,.el-tag');
+  var scoped = false;
+  var els = document.getElementsByTagName('*'), n = Math.min(els.length, 300);
+  for(var i = 0; i < n && !scoped; i++){
+    var a = els[i].attributes;
+    for(var j = 0; j < a.length; j++){ if(a[j].name.indexOf('data-v-') === 0){ scoped = true; break; } }
+  }
   return {
     React:  !!(hook || document.querySelector('[data-reactroot],#root>div')),
-    Vue3:   !!(v3 || window.__VUE__),
+    Vue3:   !!(v3 || window.__VUE__ || elp || scoped),
     Vue2:   !!(v2 || window.Vue),
     Angular:!!document.querySelector('[ng-version]'),
     Next:   !!window.__NEXT_DATA__,

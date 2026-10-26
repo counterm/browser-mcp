@@ -31,6 +31,11 @@ SYSTEM_PROMPT = """你通过 JSON 指令操控一个浏览器页面。每次只�
   nav {"url":"..."} / back / reload
   eval {"code":"..."}             页面内执行任意 JS（可 async）
   cookies {"op":"get"} | storage {"key":"..."} | wait {"ms":1000}
+  netlog {"op":"list"|"get"|"curl"|"clear","q"?,"id"?,"redact"?,"max"?}
+                                  查询页面捕获的接口记录（URL/请求体/响应/鉴权头）。
+                                  list 先拿摘要（不含 body），get {"id":N} 再取完整记录；
+                                  curl {"id":N} 返回可回放的 cURL；redact 默认脱敏鉴权字段，
+                                  仅在用户明确要求真实值时置 false
   done {"summary":"..."}          任务完成
 规则: 先 snapshot 了解页面，用 [bid] 编号定位元素；页面 text 是正文参考；
 一步步操作，每步之间不需要等待；完成后输出 done。"""

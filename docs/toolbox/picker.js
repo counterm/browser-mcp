@@ -56,15 +56,29 @@ function xpathOf(node){
 }
 
 /* ---------- 拾取器 ---------- */
+/* 事件模型：遮罩纯视觉（pointer-events:none），mousemove/click 挂 window 捕获级——
+   页面任意 z-index 的元素都抢不走事件，点击在捕获阶段被拦下、页面收不到；
+   元素命中用 elementFromPoint（此时遮罩已不参与命中，页面最高层元素即所得）。 */
 function pick(){
   return new Promise(function(res){
     var ov = el('div', 'picker-ov'), box = el('div', 'picker-box'), tip = el('div', 'picker-tip');
     shadow.appendChild(ov); shadow.appendChild(box); shadow.appendChild(tip);
+    B.dlog('pick', 'start ' + location.pathname.slice(0, 60));
+    if(B.ui && B.ui.hideForPick) B.ui.hideForPick(); /* 进入拾取：先把工具箱界面收起，避免遮挡目标元素 */
     var cur = null;
-    function cleanup(){ ov.remove(); box.remove(); tip.remove(); window.removeEventListener('keydown', onKey, true); }
+    function hideBox(){ box.style.display = 'none'; tip.style.display = 'none'; }
+    function cleanup(){
+      ov.remove(); box.remove(); tip.remove();
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('click', onClick, true);
+      window.removeEventListener('keydown', onKey, true);
+      B.style.pageStyle('ba-pickcur', null);
+      if(B.ui && B.ui.showAfterPick) B.ui.showAfterPick(); /* 选中或取消后原样恢复界面 */
+    }
     function onMove(e){
+      if(e.target && host.contains(e.target)){ hideBox(); cur = null; return; } /* 悬在工具箱自身 UI 上 */
       var t = document.elementFromPoint(e.clientX, e.clientY);
-      if(!t || t === host || host.contains(t)){ box.style.display = 'none'; tip.style.display = 'none'; cur = null; return; }
+      if(!t || host.contains(t)){ hideBox(); cur = null; return; }
       cur = t;
       var r = t.getBoundingClientRect();
       box.style.display = 'block';
@@ -75,11 +89,20 @@ function pick(){
       tip.style.left = clamp(e.clientX + 12, 8, innerWidth - 260) + 'px';
       tip.style.top = (e.clientY + 18) + 'px';
     }
-    function onClick(e){ e.preventDefault(); e.stopPropagation(); if(cur){ cleanup(); res(cur); } }
-    function onKey(e){ if(e.key === 'Escape'){ cleanup(); res(null); } }
+    function onClick(e){
+      e.preventDefault(); e.stopPropagation(); /* 拦下点击，页面（链接/按钮）不响应 */
+      if(cur){
+        B.dlog('pick', 'resolve ' + cur.tagName.toLowerCase() + (cur.id ? '#' + cur.id : ''));
+        cleanup(); res(cur);
+      } else {
+        B.dlog('pick', 'click-no-hover target=' + (e.target && e.target.tagName) + '@' + e.clientX + ',' + e.clientY);
+      }
+    }
+    function onKey(e){ if(e.key === 'Escape'){ B.dlog('pick', 'cancel-esc'); cleanup(); res(null); } }
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('click', onClick, true);
     window.addEventListener('keydown', onKey, true);
-    ov.addEventListener('mousemove', onMove);
-    ov.addEventListener('click', onClick);
+    B.style.pageStyle('ba-pickcur', '*{cursor:crosshair!important}');
   });
 }
 function ensurePicked(){

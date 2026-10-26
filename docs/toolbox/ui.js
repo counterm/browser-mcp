@@ -100,6 +100,14 @@ function closePanel(){
 }
 function togglePanel(){ state.open ? closePanel() : openPanel(); }
 
+/* ---------- 拾取期间临时隐藏整个工具箱 UI（FAB/面板/列表/详情/撤销栈），结束后原样恢复 ---------- */
+function pickNodes(){ return [fab, panel, pop, dpop, undoPill]; }
+function hideForPick(){ pickNodes().forEach(function(n){ n.classList.add('pick-hide'); }); }
+function showAfterPick(){
+  pickNodes().forEach(function(n){ n.classList.remove('pick-hide'); });
+  if(state.open) layout();
+}
+
 /* ---------- Popover ---------- */
 var hoverTimer = null;
 function openPop(catId, pin){
@@ -202,6 +210,7 @@ B.ui = {
   fab: fab, panel: panel, pop: pop, dpop: dpop, undoPill: undoPill,
   layout: layout, layoutPop: layoutPop, layoutDpop: layoutDpop,
   openPanel: openPanel, closePanel: closePanel, togglePanel: togglePanel,
+  hideForPick: hideForPick, showAfterPick: showAfterPick,
   openPop: openPop, closePop: closePop, scheduleClose: scheduleClose, cancelClose: function(){ clearTimeout(hoverTimer); }, renderList: renderList,
   openDetail: openDetail, closeDetail: closeDetail, clearDetail: clearDetail, openAbout: openAbout,
   pushUndo: pushUndo, refreshUndo: refreshUndo,

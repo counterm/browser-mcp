@@ -2,6 +2,63 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-26 · 修复元素拾取器：拾取期间收起工具箱界面，选中后恢复
+
+- **现象**：点「开始拾取」后 hover/点击页面元素，元素能正常锁定且结果已渲染，但面板、功能列表、详情浮层同时关闭，表现为「所有工具都消失」；且再次拾取时上一次结果会残留在详情区
+- **根因 1（界面被误关）**：拾取器只在 **`click`** 捕获阶段拦截页面点击，而 `boot.js` 的「点击页面其他位置收起面板」监听的是 **捕获阶段 `pointerdown`**——pointerdown 先于 click，点页面选元素的同时先执行了 `ui.closePanel()`，等 pick 的 promise resolve 时浮层已关闭
+- **根因 2（拾取界面遮挡）**：拾取期间面板/浮层停留在屏幕上，既挡视线也挡目标元素，与「进入拾取应专注页面」的预期不符
+- **修复**：
+  - `ui.js` 新增 `hideForPick()/showAfterPick()`，`core.js` 新增 `.pick-hide{display:none!important}`——拾取开始时把 FAB/面板/功能列表/详情浮层/撤销栈整体隐藏，选中或 Esc 取消后原样恢复并重算布局（不改变各自 open 状态，恢复即回到拾取前的界面）
+  - `picker.js` 的 `pick()` 在创建遮罩时调用 `hideForPick()`，`cleanup()` 里调用 `showAfterPick()`；所有走 `B.pick()` 的功能（隐藏元素 / 容器截图 / 存入选中元素 / 事件反查 / 表格提取等）自动获得同样行为；`ensurePicked()` 打开详情即自动拾取的场景同样生效
+  - `boot.js` 的 pointerdown 收起逻辑增加守卫 `if(sq('.picker-ov')) return;`（拾取期间页面点击 = 选中元素，不是点空白收起），与既有 Esc 守卫同口径
+  - `feats/find.js` 的「元素拾取器」结果写入独立结果区 `out`，每次点击「开始拾取」先清空——只显示当前这次结果，不再残留上一次
+- 原型 `docs/toolbox/` 四个文件（core / ui / picker / feats/find）同步；本地原型页真实鼠标验证：进入拾取后 FAB/面板/列表/详情/撤销栈全部隐藏 → 点击表格单元格 → 界面恢复且结果只有 1 份；再次拾取时旧结果清空；Esc 取消同样恢复界面
+
+## 2026-10-22 · 采集新增「接口调用」：双层捕获 + netlog LLM 查看协议
+
+- **双层捕获架构**（MV3 webRequest 拿不到响应体，页面 hook 看不到浏览器自动加的 Cookie，两层合并）：
+  - 新增 `chrome-extension/capture-main.js`——manifest 静态声明 `document_start` + `world:"MAIN"` 注入，包裹 fetch/XHR 抓**请求体原文/响应体**（`clone()` 旁路流式读取、超 256KB cancel，不拖慢页面不全量缓冲；SSE/二进制/opaque 只记 meta），环形缓冲 300 条存页面内存（导航即清空，除主动查询不离开页面）；`feats/capture.js` 新增 `apinet`（接口调用，功能数 36→37，README 与 proto-map 同步）
+  - background 加 webRequest 观察模式 5 监听器（`onBeforeRequest/onSendHeaders/onHeadersReceived/onCompleted/onErrorOccurred` 定稿）抓 **URL/method/全量请求头（`extraHeaders` 才有 Cookie/Authorization）/请求体/响应头与状态码**；只记白名单页；定稿落 `chrome.storage.session['neth:'+tabId]`（每 tab 150 条、2MB 体积护栏丢最旧、请求体截 16KB、不存响应体；SW 随时可被杀，不能只放全局变量）；tab 关闭清 key
+  - 合并按 method + URL 归一化 + Δt≤8s 最近邻、**consume-once**（rid 去重防同 URL 轮询误并），歧义保留 `src='net'` 的「仅头」记录（整页跳转后 body 侧清空时仍可见）
+- **复制**：`apinet` 列表（1.5s 轮询）→ 点行进详情（同详情浮层内切换）→ 请求头/请求体/响应头/响应体分区 + **复制调试文本 / 复制 cURL**；**默认脱敏**（Cookie/Authorization/token 头 → `«已脱敏»`，体套用 JWT/手机号/邮箱等占位，口径同 `B.REDACT`），按站开关 `localStorage["ba:netredact"]`
+- **查看（上层总沟通协议）**：新增 broker 命令 `netlog`（进 hello `caps`）——`{"op":"list"}` 摘要（不含 body）→ `{"op":"get","id":N}` 完整记录 / `{"op":"curl"}` 回放 / `{"op":"clear"}`；链路 background → content.js → DOM 事件 `batb:netq` → MAIN world 捕获层应答（不走 eval：eval 在 USER_SCRIPT/ISOLATED world 看不到 MAIN world）；`cli_client.py` SYSTEM_PROMPT 同步；协议 spec 见 `docs/spec-net-protocol.md`
+- manifest 0.1.1→0.1.2，permissions 加 `webRequest`（观察模式，无需 blocking）；**更新后需重载扩展并刷新页面**（捕获层随页面 document_start 注入）
+- 原型 `docs/toolbox/` 不动：本功能依赖扩展后台/扩展桥，与 qr/capture 同属「仅扩展版」
+
+## 2026-10-21 · 截图自动处理浮动元素（fixed / sticky）
+
+- **fixed 元素临时隐藏、sticky 元素临时取消吸附**（转 `static`，只在原位出现一次），整页截图与容器截图共用——`markFloating(scroller)` 扫描 `body *` 按 computed position 打标（`data-ba-fx` / `data-ba-stk`）+ 页面级 CSS 生效，`finally` 里 `unmarkFloating()` 还原属性与样式；结果信息展示处理数量
+- 容器截图跳过滚动容器自身与其祖先（避免把目标藏掉）；容器**内部**的 sticky 照常取消吸附（吸顶表头不再每屏重复）；标记在测量矩形之前完成，保证裁剪坐标不受布局微移影响
+- fixed 为脱离文档流隐藏不影响布局；sticky 占据常规流位置，转 static 不改变高度——两种处理均不引入页面跳动；dlog 记录 `floating fixed=N sticky=M`
+- README 采集段、proto-map `fullshot`/`elshot` 行同步
+
+## 2026-10-21 · 拾取器改窗口捕获级事件 + 交互诊断日志
+
+- **拾取事件模型重构**：此前依赖遮罩（`.picker-ov`）接收 mousemove/click——页面若有 z-index 更高的元素（弹窗/浮层）盖住遮罩，真实事件落不到遮罩上，拾取即失效（合成事件测试绕过了真实命中路径，故此前自测未复现）。改为：遮罩纯视觉（`pointer-events:none`），mousemove/click 挂 **window 捕获级**（页面任何元素都抢不走事件），点击在捕获阶段 `preventDefault + stopPropagation` 拦下（页面链接/按钮不响应）；元素命中回归 `elementFromPoint`（遮罩已不参与命中，页面最高层元素即所得）；悬在工具箱自身 UI 上时通过 `host.contains(e.target)` 判定不拾取；拾取期间注入 `*{cursor:crosshair!important}`；高亮框/提示条 z-index 提到 2147483601+，保证盖过页面任意浮层
+- **新增交互诊断日志 `B.dlog`**：环形写入 `localStorage["ba:diaglog"]`（每站点 60 条）——拾取开始/命中/取消、容器截图进入/模式/矩形/步数/逐屏成功/异常全量埋点；用户 F12 Console 执行 `copy(localStorage.getItem('ba:diaglog'))` 即可把交互数据反馈给开发侧定位
+- 原型 `docs/toolbox/` 的 core.js / picker.js 同步
+
+## 2026-10-21 · 修复 FAB 在视口变矮后被淹没
+
+- FAB 拖拽记忆的是绝对 `top`，F12 停靠等把视口压矮后会停在视口外不可见；boot.js 新增 `clampFab`——恢复记忆位置时与 `window.resize` 时把 `top` 钳回视口内（默认 `bottom:24px` 定位随视口自适应，不受影响）；面板开着时同步重算布局；原型 `docs/toolbox/boot.js` 同步
+- 本地自测页（桥接桩模拟 `captureVisibleTab`）+ 真实浏览器验证：容器截图（容器内 4 屏滚动拼接、滚动位置还原、结果渲染）、区域截图退化、FAB 钳制（记忆 top=3000px 加载后入视口、resize 压矮仍入视口）三条链路通过
+
+## 2026-10-21 · 修复元素拾取器：Shadow DOM 命中测试不穿透
+
+- **修复 `pick()` 对页面元素完全失效**（隐藏元素 / 元素描边 / 查找 / 容器截图等所有拾取功能）：拾取遮罩挂在工具箱 Shadow DOM 内，`document.elementFromPoint` 不穿透 Shadow——遮罩盖屏后任何位置命中的都是宿主 `#ba-toolbox-host`，恰被 `t === host` 判为工具箱自身丢弃，导致永远无高亮、点击无响应（只能 Esc 退出）
+- 改用 `document.elementsFromPoint` 取整叠命中元素，跳过宿主后取其下的真实页面元素；原型 `docs/toolbox/picker.js` 同步
+
+## 2026-10-21 · 采集新增「容器截图」：只截某一容器内部的滚动范围
+
+- **背景**：整页截图对 `document` 滚动拼接，页面滚动发生在内部容器（`overflow:auto` 区域）时文档不滚，只会截到当前一屏
+- **新增** `feats/capture.js` 的 `elshot`（容器截图，功能数 35→36，README 与 proto-map 同步）：
+  - **滚动定位**：拾取元素（或容器内任一元素）向上找最近可滚动祖先——`overflowY` 为 auto/scroll/overlay 且实际溢出（`scrollHeight > clientHeight`）才算；找不到则退化为区域截图（截取该元素当前可见部分）
+  - **测量时机**：先隐藏工具箱与滚动条（容器打 `data-ba-nosb` + 注入对应 CSS，页面级滚动条同样隐藏）、`scrollIntoView({block:'nearest'})` 尽量把容器完整带入视口，之后才量 rect——避免滚动条消失/回流导致裁剪坐标漂移
+  - **步长取可视切片高度**（视口 ∩ 容器矩形）而非 clientHeight：容器比视口高时按 clientHeight 步进会漏屏；末屏不足一整步时补截贴底位置，拼接按容器内容坐标（`scrollTop + 切片偏移`）定位，天然无重叠错位
+  - **边界提示**：容器顶部/底部被视口裁住的内容物理上不可见、无法截取，输出缺口像素数；横向超出视口同样不截；容器内 sticky 元素每屏重复出现
+- **整页截图补提示**：仅截到一屏（文档自身不可滚动）时，在结果里提示滚动可能发生在内部容器，引导改用「容器截图」
+- 抽出 `showResult` / `stampName` 供两个截图功能共用；core.js 新增 `crop` 图标
+
 ## 2026-10-21 · 表单工具调整：移除「表单字段总览」，新增「表单保存与填充」
 
 - **移除** `feats/info.js` 的 `forms`（表单字段总览）——功能由新的表单保存/填充取代，功能数 34→33（原型）/ 36→35（落地），README 与 proto-map 计数同步

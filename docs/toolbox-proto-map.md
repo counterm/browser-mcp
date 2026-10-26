@@ -6,8 +6,10 @@
 > **扩展落地版**：同一套模块已落入 [chrome-extension/toolbox/](../chrome-extension/toolbox/)，
 > 由 background.js 按白名单经 `chrome.scripting` 注入页面主世界（MAIN）；
 > 本目录保留为设计原型与演示页，两处模块结构保持一致，改动请两边同步。
-> **⚠️ 落地版扩展（原型未含）**：`toolbox/qr.js`（二维码生成）与 `toolbox/feats/capture.js`（「采集」分类）——
-> 整页截图依赖扩展桥（content.js ↔ background 的 captureVisibleTab），原型演示页不可用。
+> **⚠️ 落地版扩展（原型未含）**：`toolbox/qr.js`（二维码生成）、`toolbox/feats/capture.js`（「采集」分类）与
+> `chrome-extension/capture-main.js`（页面捕获层，非 toolbox 模块——`document_start` 注入 MAIN world 包裹
+> fetch/XHR 抓请求体/响应体，与 background webRequest 头记录合并，供「接口调用」工具与 `netlog` 协议共用，
+> 见 [spec-net-protocol.md](spec-net-protocol.md)）——依赖扩展桥/扩展后台，原型演示页不可用。
 >
 > | 文件 | 行数 | 职责 |
 > |---|---|---|
@@ -66,9 +68,9 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | [helpers.js](toolbox/helpers.js) | ~61 | fetch 拦截（接口清单数据源）+ 通用实现 | `B.NET`、`B.detectStack/B.REDACT/B.redact/B.skeleton/B.maxDepth/B.flashEl` |
 | [boot.js](toolbox/boot.js) | ~91 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起）。**必须最后加载** | — |
 | [qr.js](../chrome-extension/toolbox/qr.js) | ~250 | 〔仅扩展版〕二维码生成：qrcode-generator 1.4.4（MIT）裁剪，Byte 模式 UTF-8 + 自动版本，canvas 自绘矩阵 | `B.QR` / `B.QR.make(text)` |
-| [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~140 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图（扩展桥逐屏 captureVisibleTab 拼接下载） | — |
+| [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~420 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图 / 容器截图（扩展桥逐屏 captureVisibleTab 拼接下载）/ 接口调用（读 `__BATB_NET__` + 扩展桥合并） | — |
 
-### 功能注册表 FEATS（原型 33 项，扩展落地版 35 项，按分类一文件）
+### 功能注册表 FEATS（原型 33 项，扩展落地版 37 项，按分类一文件）
 
 追加功能：打开对应分类文件，往 `B.register([...])` 数组插 `{id, cat, name, icon, star, desc, run}` 对象即可；llm 分类加 `grp:'copy'|'store'`，高级功能加 `adv:true`。
 
@@ -131,12 +133,14 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `record` | 操作录制 → 步骤（演示数据） | ★★ |
 | `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过） | ★★★ |
 
-**feats/capture.js（采集，2 项）**〔仅扩展版，原型未含〕
+**feats/capture.js（采集，4 项）**〔仅扩展版，原型未含〕
 
 | id | 功能 | 级 |
 |---|---|---|
 | `qr` | 网址二维码（qr.js 纯本地生成，下载 PNG / 复制链接） | ★★ |
-| `fullshot` | 整页截图（扩展桥 `batb:bridge` → content.js → background `captureVisibleTab`，逐屏滚动截取拼接，自动下载 PNG） | ★★★ |
+| `fullshot` | 整页截图（扩展桥 `batb:bridge` → content.js → background `captureVisibleTab`，逐屏滚动截取拼接，自动下载 PNG；截图期间自动隐藏 fixed、取消 sticky 吸附避免每屏重复，完成后还原） | ★★★ |
+| `elshot` | 容器截图（拾取元素向上找最近可滚动祖先，仅容器内部滚动逐屏截取、按可视矩形裁剪拼接；同样自动处理 fixed/sticky；无可滚动祖先退化为区域截图） | ★★★ |
+| `apinet` | 接口调用（双层捕获：`capture-main.js` hook fetch/XHR 抓请求/响应体 + background webRequest 抓全量请求头含 Cookie/Authorization，按 URL+时间 consume-once 合并；列表→详情，复制调试文本 / cURL，默认脱敏可关；LLM 经 `netlog` 命令查询同一数据，见 [spec-net-protocol.md](spec-net-protocol.md)） | ★★★ |
 
 ### ui.js 内部要点（三层弹窗联动）
 

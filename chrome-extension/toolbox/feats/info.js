@@ -44,7 +44,7 @@ B.register([
       ['事件监听器数', '—（仅 DevTools getEventListeners 可查）']
     ]));
   }},
-{ id:'net', cat:'info', name:'接口清单', icon:'share', star:3, desc:'记录页面发出的 fetch：URL、状态码、耗时',
+{ id:'net', cat:'info', name:'接口清单', icon:'share', star:3, desc:'抓取页面发出的 fetch/XHR：URL、状态码、耗时',
   run:function(b){
     var d = el('div', 'lst');
     b.appendChild(d);
@@ -56,26 +56,53 @@ B.register([
           '<span class="m">' + n.m + '</span><span class="u" title="' + esc(n.u) + '">' + esc(n.u) + '</span>' +
           '<span class="c"><span class="bdg ' + cls + '">' + n.s + '</span> <span style="color:#475569">' + n.ms + 'ms</span></span>'));
       });
-      if(!NET.length) d.appendChild(el('div', 'note', '暂无请求。页面发出 fetch 后会实时追加。'));
+      if(!NET.length) d.appendChild(el('div', 'note', '暂无请求。打开本面板后刷新或操作页面，发出的 fetch/XHR 会实时追加。'));
     }
     render();
     B.ui.detailTimer = setInterval(render, 1200); /* 清理由 ui.clearDetail 统一负责 */
-    b.appendChild(note('记录工具箱加载后页面发出的 fetch 请求（XHR 暂不捕获）。'));
+    b.appendChild(note('实时记录工具箱加载后页面发出的 fetch 与 XHR 请求（含 axios）。打开本面板后刷新或操作页面可捕获新请求；注入前的首屏请求不会被记录。'));
   }},
-{ id:'sdk', cat:'info', name:'第三方 SDK 盘点', icon:'package', star:1, desc:'埋点、监控、客服、A/B 实验脚本',
+{ id:'sdk', cat:'info', name:'第三方 SDK 盘点', icon:'package', star:1, desc:'埋点/监控脚本 + 前端依赖指纹（Vue/Element Plus 等）',
   run:function(b){
+    /* 1) 已知埋点/监控/客服 SDK：扫描带 src 的 <script> 域名 */
     var KNOWN = { 'google-analytics':'GA 埋点', 'googletagmanager':'GTM', sentry:'Sentry 监控', 'sentry-cdn':'Sentry 监控', segment:'Segment', hotjar:'Hotjar 录屏', clarity:'Clarity 录屏', growingio:'GrowingIO', sensorsdata:'神策数据', mixpanel:'Mixpanel', amplitude:'Amplitude', bugsnag:'Bugsnag', datadog:'Datadog RUM', intercom:'Intercom 客服', zhichi:'智齿客服' };
-    var found = [];
+    var trackers = [];
     $$('script[src]').forEach(function(s){
       var h = (function(){ try{ return new URL(s.src).hostname; }catch(e){ return s.src; } })();
-      Object.keys(KNOWN).forEach(function(k){ if(h.indexOf(k) > -1) found.push([KNOWN[k], h]); });
+      Object.keys(KNOWN).forEach(function(k){ if(h.indexOf(k) > -1) trackers.push([KNOWN[k], h]); });
     });
-    if(found.length){
-      var d = el('div', 'lst');
-      found.forEach(function(f){ d.appendChild(el('div', 'li', '<span class="u">' + esc(f[0]) + '</span><span class="c" style="color:#475569">' + esc(f[1]) + '</span>')); });
-      b.appendChild(d);
-    } else b.appendChild(el('div', 'note', '未发现已知第三方 SDK。'));
-    b.appendChild(note('识别依据：带 src 的 <script> 标签域名命中已知 SDK 关键字。'));
+    if(trackers.length){
+      b.appendChild(el('div', 'grp-h', '埋点 / 监控 / 客服'));
+      var d1 = el('div', 'lst');
+      trackers.forEach(function(f){ d1.appendChild(el('div', 'li', '<span class="u">' + esc(f[0]) + '</span><span class="c" style="color:#475569">' + esc(f[1]) + '</span>')); });
+      b.appendChild(d1);
+    }
+
+    /* 2) 前端依赖指纹：DOM 标记 + 全局变量（适用于打包后的 SPA，如 sz-admin） */
+    var LIBS = [
+      { n:'Vue 3', t:function(){ return !!(window.Vue || (B.detectStack && B.detectStack().Vue3)); } },
+      { n:'Element Plus', t:function(){ return !!(window.ElementPlus || document.querySelector('.el-button,.el-table,.el-menu,.el-input,.el-dialog,.el-form')); } },
+      { n:'Element UI (Vue2)', t:function(){ return !!window.ELEMENT; } },
+      { n:'Ant Design Vue', t:function(){ return !!document.querySelector('.ant-btn,.ant-table,.ant-menu,.ant-input'); } },
+      { n:'Pinia', t:function(){ return !!(window.Pinia || window.__pinia); } },
+      { n:'Vue Router', t:function(){ return !!window.__vue_router__; } },
+      { n:'Axios', t:function(){ return !!window.axios; } },
+      { n:'ECharts', t:function(){ return !!(window.echarts || document.querySelector('[class*="echarts"],.echarts-canvas,canvas[data-zr-dom-id]')); } },
+      { n:'Lodash', t:function(){ return !!window._; } },
+      { n:'Day.js / Moment', t:function(){ return !!(window.dayjs || window.moment); } },
+      { n:'Swiper', t:function(){ return !!window.Swiper; } },
+      { n:'TinyMCE', t:function(){ return !!window.tinymce; } }
+    ];
+    var libs = LIBS.filter(function(l){ try{ return l.t(); }catch(e){ return false; } });
+    if(libs.length){
+      b.appendChild(el('div', 'grp-h', '前端依赖指纹'));
+      var d2 = el('div', 'lst');
+      libs.forEach(function(l){ d2.appendChild(el('div', 'li', '<span class="u">' + esc(l.n) + '</span><span class="c" style="color:#475569">推断（DOM/全局标记）</span>')); });
+      b.appendChild(d2);
+    }
+
+    if(!trackers.length && !libs.length) b.appendChild(el('div', 'note', '未发现已知第三方 SDK，也未识别到常见前端依赖指纹。'));
+    b.appendChild(note('① 埋点 SDK：扫描带 src 的 <script> 域名是否命中已知分析/监控/客服名单；② 依赖指纹：基于 DOM 标记与全局变量推断（打包后的库默认不上 window，可能漏检）。'));
   }}
 ]);
 })(window.BATB);

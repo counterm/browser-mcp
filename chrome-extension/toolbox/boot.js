@@ -70,6 +70,15 @@ pop.addEventListener('click', function(e){ e.stopPropagation(); });
     if(p){ fab.style.left = p.l; fab.style.right = p.r; fab.style.top = p.t; fab.style.bottom = 'auto'; }
   }catch(e){}
 })();
+/* 视口尺寸变化（如 F12 停靠改变高度）时把 FAB 钳回视口内——记忆位置是绝对 top，视口变矮会被淹没 */
+function clampFab(){
+  if(!fab.style.top) return; /* 默认 bottom:24px 定位随视口自适应，无需处理 */
+  var h = fab.offsetHeight || 52;
+  fab.style.top = clamp(parseFloat(fab.style.top) || 0, 4, Math.max(innerHeight - h - 4, 4)) + 'px';
+  if(state.open) ui.layout();
+}
+window.addEventListener('resize', clampFab);
+clampFab();
 
 /* ---------- 全局热键 / Esc 分级返回：详情浮层 → 列表 Popover → 面板 ---------- */
 window.addEventListener('keydown', function(e){
@@ -86,6 +95,7 @@ window.addEventListener('resize', function(){ if(state.open) ui.layout(); });
 /* ---------- 点击页面其他位置收起 ---------- */
 document.addEventListener('pointerdown', function(e){
   if(!state.open) return;
+  if(sq('.picker-ov')) return; // 拾取中：页面上的点击是「选中元素」，不是「点空白收起」
   if(B.host.contains(e.target)) return;
   ui.closePanel();
 }, true);

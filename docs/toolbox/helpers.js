@@ -23,9 +23,17 @@ B.detectStack = function(){
   var hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   var any = document.querySelector('*');
   var v3 = any && any.__vueParentComponent, v2 = $$('*').filter(function(e){ return e.__vue__; })[0];
+  /* 生产构建会摇树掉 __vueParentComponent / __VUE__，用库类名 / scoped 作用域标记兜底 */
+  var elp = document.querySelector('.el-button,.el-table,.el-input,.el-menu,.el-dialog,.el-form,.el-tag');
+  var scoped = false;
+  var els = document.getElementsByTagName('*'), n = Math.min(els.length, 300);
+  for(var i = 0; i < n && !scoped; i++){
+    var a = els[i].attributes;
+    for(var j = 0; j < a.length; j++){ if(a[j].name.indexOf('data-v-') === 0){ scoped = true; break; } }
+  }
   return {
     React:  !!(hook || document.querySelector('[data-reactroot],#root>div')),
-    Vue3:   !!(v3 || window.__VUE__),
+    Vue3:   !!(v3 || window.__VUE__ || elp || scoped),
     Vue2:   !!(v2 || window.Vue),
     Angular:!!document.querySelector('[ng-version]'),
     Next:   !!window.__NEXT_DATA__,

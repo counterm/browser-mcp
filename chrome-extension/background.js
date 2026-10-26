@@ -15,7 +15,7 @@ importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
 
 const CONTENT_ACTIONS = [
   'ping', 'snapshot', 'click', 'type', 'press', 'select', 'scroll', 'hover',
-  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight',
+  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog',
 ];
 const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
 const CAPS = [...CONTENT_ACTIONS, ...EXTRA_ACTIONS];
@@ -216,6 +216,124 @@ async function handleFilterMessage(msg, sendResponse) {
   }
 }
 
+/* ============ 接口捕获层（webRequest 观察模式，MV3 无需 blocking） ============
+ * 与页面 MAIN world 的 capture-main.js 双层合并：本侧抓 URL/method/全量请求头（含浏览器自动加的
+ * Cookie，必须 extraHeaders，否则 Chrome 72+ 会隐去）/请求体/响应头与状态码；响应体 webRequest
+ * 拿不到（MV2 起即如此），由页面侧 hook fetch/XHR 捕获。
+ * 只记录 tabs Map 已注册（=白名单命中）的 tab。SW 可能被随时杀掉：定稿记录必须落
+ * chrome.storage.session（随浏览器会话存活），不能只放全局变量；页面侧内存 Map 丢了只是
+ * 少拼几条半成品，可接受。详见 docs/spec-net-protocol.md。
+ */
+const NET_TAB_MAX = 150;      // 每 tab 环形上限（条）
+const NET_TAB_BYTES = 2e6;    // 每 tab 序列化体积上限（session 总配额 10MB，后台侧不存响应体）
+const NET_BODY_MAX = 16384;   // 请求体截断上限（字符）
+const netPend = new Map();    // requestId -> 半成品（onBeforeRequest 起，onCompleted/onErrorOccurred 定稿）
+const netBuf = new Map();     // tabId -> 待写数组（防抖 800ms 批量落盘）
+const netFlush = new Map();   // tabId -> 防抖 timer
+
+const netAllowed = (tabId) => tabs.has(tabId);
+
+function netReqBody(rb) {
+  try {
+    if (!rb) return null;
+    if (rb.formData) {
+      return Object.keys(rb.formData).map((k) => k + '=' + rb.formData[k].join('&')).join('\n');
+    }
+    if (rb.raw && rb.raw.length) {
+      const total = rb.raw.reduce((n, x) => n + (x.bytes ? x.bytes.byteLength : 0), 0);
+      const u8 = new Uint8Array(total);
+      let off = 0;
+      rb.raw.forEach((x) => { if (x.bytes) { u8.set(new Uint8Array(x.bytes), off); off += x.bytes.byteLength; } });
+      return new TextDecoder('utf-8').decode(u8);
+    }
+  } catch {}
+  return null;
+}
+const netTrim = (s) => {
+  s = String(s == null ? '' : s);
+  return s.length > NET_BODY_MAX ? s.slice(0, NET_BODY_MAX) + '…[截断]' : s;
+};
+
+chrome.webRequest.onBeforeRequest.addListener((det) => {
+  try {
+    if (!/^https?:/i.test(det.url) || !netAllowed(det.tabId)) return;
+    netPend.set(det.requestId, {
+      rid: det.requestId, tabId: det.tabId, t: det.timeStamp,
+      m: det.method, u: det.url, reqBody: netTrim(netReqBody(det.requestBody)),
+    });
+  } catch {}
+}, { urls: ['<all_urls>'] }, ['requestBody']);
+
+chrome.webRequest.onSendHeaders.addListener((det) => {
+  const p = netPend.get(det.requestId);
+  if (!p) return;
+  p.reqHdr = (det.requestHeaders || []).map((h) => ({ k: h.name, v: h.value || '' }));
+}, { urls: ['<all_urls>'] }, ['requestHeaders', 'extraHeaders']);
+
+chrome.webRequest.onHeadersReceived.addListener((det) => {
+  const p = netPend.get(det.requestId);
+  if (!p) return;
+  p.resHdr = (det.responseHeaders || []).map((h) => ({ k: h.name, v: h.value || '' }));
+  p.s = det.statusCode;
+}, { urls: ['<all_urls>'] }, ['responseHeaders', 'extraHeaders']);
+
+chrome.webRequest.onCompleted.addListener((det) => {
+  const p = netPend.get(det.requestId);
+  if (!p) return;
+  netPend.delete(det.requestId);
+  p.s = det.statusCode;
+  p.ms = det.timeStamp - p.t;
+  netStore(p);
+}, { urls: ['<all_urls>'] });
+
+chrome.webRequest.onErrorOccurred.addListener((det) => {
+  const p = netPend.get(det.requestId);
+  if (!p) return;
+  netPend.delete(det.requestId);
+  p.s = 'ERR';
+  p.ms = det.timeStamp - p.t;
+  p.note = det.error;
+  netStore(p);
+}, { urls: ['<all_urls>'] });
+
+/** 定稿记录入队（防抖批量写，避免高频请求打爆 storage 写入） */
+function netStore(p) {
+  const arr = netBuf.get(p.tabId) || [];
+  arr.push(p);
+  netBuf.set(p.tabId, arr);
+  if (netFlush.has(p.tabId)) return;
+  netFlush.set(p.tabId, setTimeout(() => {
+    netFlush.delete(p.tabId);
+    const buf = netBuf.get(p.tabId) || [];
+    netBuf.delete(p.tabId);
+    netWrite(p.tabId, buf);
+  }, 800));
+}
+
+async function netWrite(tabId, items) {
+  try {
+    const key = 'neth:' + tabId;
+    const cur = (await chrome.storage.session.get(key))[key] || [];
+    let recs = cur.concat(items.map((p) => ({
+      rid: p.rid, t: p.t, m: p.m, u: p.u,
+      reqHdr: p.reqHdr || [], reqBody: p.reqBody || null,
+      resHdr: p.resHdr || [], s: p.s == null ? null : p.s, ms: p.ms == null ? null : Math.round(p.ms),
+    }))).slice(-NET_TAB_MAX);
+    // 配额护栏：超体积丢最旧（头集合可能很大，尤其 Cookie）
+    const est = () => recs.reduce((n, r) => n + JSON.stringify(r).length, 0);
+    while (recs.length > 1 && est() > NET_TAB_BYTES) recs = recs.slice(1);
+    await chrome.storage.session.set({ [key]: recs });
+  } catch (err) {
+    log(`netWrite tab${tabId} failed: ${(err && err.message) || err}`); // 超限等场景宁丢不崩
+  }
+}
+
+/** 孤儿 GC：>60s 未定稿的半成品丢弃（SW 重启后 Map 清空，这里兜陈年残留） */
+setInterval(() => {
+  const cutoff = Date.now() - 60000;
+  for (const [id, p] of netPend) if (p.t < cutoff) netPend.delete(id);
+}, 60000);
+
 /* ============ 页面工具箱（docs/toolbox 原型的扩展落地） ============
  * 白名单门控注入：页面命中白名单后，经 chrome.scripting 把 toolbox/ 下 14 个模块
  * 注入页面主世界（MAIN world —— React fiber、fetch 拦截、window.__BA_* 都在页面上下文才可见），
@@ -295,6 +413,7 @@ function dropEntry(tabId, reason) {
   clearInterval(e.hb);
   clearTimeout(e.retryTimer);
   try { e.ws && e.ws.close(); } catch {}
+  chrome.storage.session.remove('neth:' + tabId).catch(() => {}); // 接口捕获：tab 没了头记录一并清
   tabs.delete(tabId);
   log(`tab${tabId} dropped: ${reason}`);
 }
@@ -443,6 +562,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 工具箱桥「整页截图」：单屏截取（页面侧负责滚动编排与拼接）；结果必须包在 data 字段（桥协议只透传 data）
     chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' })
       .then((dataUrl) => sendResponse({ ok: true, data: { dataUrl } }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+  if (msg && msg.type === 'tb:net') {
+    // 工具箱桥「接口调用」：取本 tab 的 webRequest 头部记录（capture-main.js 拉回页面侧做合并）
+    const ntab = sender.tab && sender.tab.id;
+    chrome.storage.session.get('neth:' + ntab)
+      .then((o) => sendResponse({ ok: true, data: o['neth:' + ntab] || [] }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+  if (msg && msg.type === 'tb:netclear') {
+    const ctab = sender.tab && sender.tab.id;
+    chrome.storage.session.remove('neth:' + ctab)
+      .then(() => sendResponse({ ok: true, data: 'ok' }))
       .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
     return true;
   }
