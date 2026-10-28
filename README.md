@@ -25,8 +25,8 @@
 | ├ `filter.js` | 白名单核心：配置存储、eTLD+1 主域名提取、匹配引擎（SW/popup/options 共用） |
 | ├ `popup.html` / `popup.js` | 工具栏弹窗：接入总开关、当前页白名单状态、一键加入/移出 |
 | ├ `options.html` / `options.js` | 完整配置页：域名列表与正则规则的增删改查、导入导出、正则实时测试面板 |
-| ├ `capture-main.js` | 页面捕获层（`document_start` 注入 MAIN world）：包裹 fetch/XHR 抓请求体/响应体，与 bg 的 webRequest 头记录合并；供「接口调用」工具与 `netlog` 协议共用（见 `docs/spec-net-protocol.md`） |
-| ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等 18 种）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` 查询转给页面捕获层 |
+| ├ `capture-main.js` | 页面捕获层（`document_start` 注入 MAIN world）：包裹 fetch/XHR 抓请求体/响应体，与 bg 的 webRequest 头记录合并；同时 hook `console` / 未捕获异常 / 资源加载失败 / CSP，写入 `__BATB_LOG__` 供 `plog` 查询。接口部分供「接口调用」工具与 `netlog` 协议共用（见 `docs/spec-net-protocol.md`） |
+| ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` / `plog` 查询转给页面捕获层 |
 | └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
 | `build/` | 打包产物与测试密钥：`make-test-key.mjs`（生成测试私钥）、`debug-extension.pem`、`chrome-extension.crx` |
@@ -186,6 +186,7 @@ MCP 工具：
 | `list_marks` | - | 标记列表（离线时也给最后一次 URL） |
 | `page_snapshot` | `page?` | 实时快照（交互元素带 bid 编号 + 正文） |
 | `page_call` | `page?, action, timeout?, ...` | 下发任意命令，参数同下方命令表（click / type / nav / eval / dom / screenshot…） |
+| `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **仅扩展版**：读取页面运行日志与异常（console / 未捕获异常 / Promise 拒绝 / 资源加载失败 / CSP），带 `t / iso / perf` 发生时间、行列号与堆栈。用 `since` + `doc` 游标增量拉取；`wait_ms>0` 时页面侧长轮询等待新异常（≤20s），适合动作后确认是否报错 |
 
 `page` 可传标记 id 或 pid；只有一个在线页面时可省略。工具调用与 `/call` 走同一条转发链路，超时上限同样 120s。
 
@@ -213,6 +214,7 @@ MCP 工具：
 | `wait` | `ms` | 等待（上限 15s） |
 | `highlight` | `bid` | 红框标出元素 2 秒（调试用） |
 | `netlog` | `op, q?, id?, limit?, max?, redact?` | **仅扩展版**：查询页面捕获的接口记录（URL/请求体/响应/鉴权头）。`op=list` 拿摘要（不含 body）→ `op=get {"id":N}` 取完整记录 → `op=curl {"id":N}` 拿可回放 cURL；`op=clear` 清空。**`redact` 默认脱敏鉴权字段**，仅必要时置 false。详见 `docs/spec-net-protocol.md` |
+| `plog` | `op?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **仅扩展版**：查询页面日志与异常。`kinds` 取 `console / exception / rejection / resource / csp`，`levels` 取 `error / warn / info / log / debug`；返回 `{doc, cursor, navigated, counts, items}`。`since` 传上次 `cursor` 增量拉取；`doc` 标识文档，导航后变化会返回 `navigated:true`；`wait_ms>0` 页面侧长轮询等待新异常（上限 20s）；`text_max` 默认单条 600 字符；`clear` 清空缓冲；`redact` 默认开 |
 | `screenshot` | - | **仅扩展版**：截图，返回 `{format:"png", dataUrl}` |
 | `tab_list` | - | **仅扩展版**：列出所有标签页 |
 | `tab_open` | `url, active?` | **仅扩展版**：新开标签页 |

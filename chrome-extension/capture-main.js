@@ -74,6 +74,222 @@
     if (N.recs.length > N.MAX) N.recs.splice(0, N.recs.length - N.MAX);
   }
 
+  /* ---------- 日志捕获层（console / 异常 / 资源 / CSP，MAIN world） ----------
+   * 与接口捕获层同构：document_start 先于页面脚本打补丁，缓冲只存页面内存，
+   * 只有被 batb:logq 查询时才离开页面。时间同时给 t（epoch ms）/ iso / perf。
+   * 所有 hook 全程 try/catch，绝不改变页面自身的 console 与错误处理行为。
+   */
+  var L = window.__BATB_LOG__ = {
+    ver: 1,
+    doc: 'd_' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4),
+    recs: [],
+    seq: 0,
+    MAX: 800,
+    TEXT_MAX: 2048,
+    STACK_MAX: 4096,
+    last: null
+  };
+
+  function capLog(s, max){
+    s = String(s == null ? '' : s);
+    max = max || L.TEXT_MAX;
+    return s.length > max ? s.slice(0, max) + '…[截断，共 ' + s.length + ' 字符]' : s;
+  }
+  function nowPerf(){ try { return performance.now(); } catch(e){ return 0; } }
+
+  /* 带深度 / 键数 / 字符上限的序列化：大对象、循环引用、DOM 都不会拖慢页面 */
+  function serLog(v, depth, seen){
+    try {
+      if (v === null) return 'null';
+      if (v === undefined) return 'undefined';
+      var t = typeof v;
+      if (t === 'string') return capLog(v);
+      if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
+      if (t === 'symbol') return String(v);
+      if (t === 'function') return '[Function ' + (v.name || 'anonymous') + ']';
+      if (v instanceof Date) return v.toISOString();
+      if (v instanceof Error) return (v.name || 'Error') + ': ' + v.message;
+      if (v && v.nodeType === 1) return '<' + String(v.tagName).toLowerCase() + (v.id ? '#' + v.id : '') + '>';
+      if (depth > 3) return '[Object]';
+      if (seen.indexOf(v) > -1) return '[Circular]';
+      seen.push(v);
+      var out;
+      if (Array.isArray(v)) {
+        var arr = v.slice(0, 50).map(function(x){ return serLog(x, depth + 1, seen); });
+        if (v.length > 50) arr.push('…');
+        out = '[' + arr.join(', ') + ']';
+      } else {
+        var keys = Object.keys(v);
+        var kv = keys.slice(0, 30).map(function(k){ return k + ': ' + serLog(v[k], depth + 1, seen); });
+        if (keys.length > 30) kv.push('…');
+        out = '{' + kv.join(', ') + '}';
+      }
+      seen.pop();
+      return out;
+    } catch(e){ return '[无法序列化]'; }
+  }
+
+  function logPush(o){
+    try {
+      var t = Date.now(), text = capLog(o.text);
+      var key = o.kind + '|' + o.level + '|' + text;
+      // 1.5s 内同来源同文本合并计数，避免刷屏式日志撑爆缓冲区；时间保留首次发生时刻
+      if (L.last && L.last.key === key && t - L.last.t < 1500) {
+        L.last.rec.count++;
+        L.last.t = t;
+        return;
+      }
+      var r = {
+        id: ++L.seq,
+        t: t,
+        iso: new Date(t).toISOString(),
+        perf: Math.round(nowPerf()),
+        kind: o.kind,
+        level: o.level,
+        text: text,
+        url: o.url || null,
+        line: o.line == null ? null : o.line,
+        col: o.col == null ? null : o.col,
+        stack: o.stack ? capLog(o.stack, L.STACK_MAX) : null,
+        count: 1
+      };
+      L.recs.push(r);
+      if (L.recs.length > L.MAX) L.recs.splice(0, L.recs.length - L.MAX);
+      L.last = { key: key, t: t, rec: r };
+    } catch(e){}
+  }
+
+  /* console.*：先记录再调用原方法；页面后续再包一层也会经过这里 */
+  (function(){
+    try {
+      if (!window.console) return;
+      ['log', 'info', 'warn', 'error', 'debug'].forEach(function(level){
+        var orig = console[level];
+        if (typeof orig !== 'function') return;
+        console[level] = function(){
+          try {
+            var args = Array.prototype.slice.call(arguments);
+            var text = args.map(function(a){ return serLog(a, 1, []); }).join(' ');
+            var stack = (level === 'error' || level === 'warn') ? (new Error()).stack : null;
+            logPush({ kind: 'console', level: level, text: text, stack: stack });
+          } catch(e){}
+          return orig.apply(console, arguments);
+        };
+      });
+    } catch(e){}
+  })();
+
+  /* 未捕获异常 + 资源加载失败（捕获阶段；资源错误不冒泡，只能这样拿） */
+  window.addEventListener('error', function(e){
+    try {
+      var tgt = e.target;
+      if (tgt && tgt !== window && tgt.tagName) {
+        var u = tgt.src || tgt.href || '';
+        logPush({ kind: 'resource', level: 'error',
+                  text: String(tgt.tagName).toLowerCase() + ' 加载失败' + (u ? '：' + u : ''),
+                  url: u || null });
+        return;
+      }
+      logPush({ kind: 'exception', level: 'error', text: e.message || '未捕获异常',
+                url: e.filename || null, line: e.lineno, col: e.colno,
+                stack: e.error && e.error.stack });
+    } catch(x){}
+  }, true);
+
+  window.addEventListener('unhandledrejection', function(e){
+    try {
+      var r = e.reason;
+      var msg = (r && r.message) ? r.message : serLog(r, 1, []);
+      logPush({ kind: 'rejection', level: 'error', text: msg, stack: r && r.stack });
+    } catch(x){}
+  });
+
+  /* CSP 拦截（MAIN world 能直接收到；不用 CDP 也能覆盖大部分场景） */
+  try {
+    document.addEventListener('securitypolicyviolation', function(e){
+      try {
+        logPush({ kind: 'csp', level: 'error',
+                  text: 'CSP 拦截 ' + (e.violatedDirective || '?') + ' → ' + (e.blockedURI || '?'),
+                  url: e.sourceFile || null, line: e.lineNumber, col: e.columnNumber });
+      } catch(x){}
+    });
+  } catch(e){}
+
+  function listArg(v){
+    if (v == null || v === '') return [];
+    var arr = Array.isArray(v) ? v : String(v).split(',');
+    return arr.map(function(x){ return String(x).trim(); }).filter(Boolean);
+  }
+
+  /* 按游标取增量；doc 变化 = 页面导航过，缓冲已重置，从头返回 */
+  function logList(p, since, on){
+    var doc = p.doc ? String(p.doc) : '';
+    var navigated = !!(doc && doc !== L.doc);
+    var base = navigated ? 0 : (isFinite(since) ? Math.max(+since, 0) : 0);
+    var kinds = listArg(p.kinds), levels = listArg(p.levels);
+    var q = String(p.q || '').toLowerCase();
+    var lim = Math.min(Math.max(+p.limit || 50, 1), 200);
+    // 输出侧再收一刀：默认单条 600 字符，避免一次查询把过多文本塞进模型上下文
+    var outMax = Math.min(Math.max(+p.text_max || 600, 100), 8192);
+    function capOut(s, max){
+      s = String(s == null ? '' : s);
+      return s.length > max ? s.slice(0, max) + '…[截断，共 ' + s.length + ' 字符]' : s;
+    }
+    var matched = L.recs.filter(function(r){
+      if (r.id <= base) return false;
+      if (kinds.length && kinds.indexOf(r.kind) === -1) return false;
+      if (levels.length && levels.indexOf(r.level) === -1) return false;
+      if (q && (r.text || '').toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+    var counts = { kind: {}, level: {} };
+    matched.forEach(function(r){
+      counts.kind[r.kind] = (counts.kind[r.kind] || 0) + 1;
+      counts.level[r.level] = (counts.level[r.level] || 0) + 1;
+    });
+    var dropped = Math.max(0, matched.length - lim);
+    var items = (dropped ? matched.slice(-lim) : matched).map(function(r){
+      return { id: r.id, t: r.t, iso: r.iso, perf: r.perf, kind: r.kind, level: r.level,
+               text: redactText(capOut(r.text, outMax), on), url: r.url, line: r.line, col: r.col,
+               stack: redactText(capOut(r.stack, outMax), on), count: r.count };
+    });
+    return { ver: L.ver, doc: L.doc, cursor: L.seq, since: base, navigated: navigated,
+             buffer: L.recs.length, total: matched.length, dropped: dropped,
+             counts: counts, items: items };
+  }
+
+  /* ---------- logq 协议应答（content.js 转发 broker 的 {"action":"plog"} 命令） ---------- */
+  window.addEventListener('batb:logq', function(ev){
+    var d = ev.detail || {};
+    var p = d.params || {};
+    function respond(res){
+      window.dispatchEvent(new CustomEvent('batb:logq:res', {
+        detail: { id: d.id, ok: !!res.ok, data: res.data === undefined ? null : res.data, error: res.error || null }
+      }));
+    }
+    try {
+      var on = p.redact === undefined ? true : !!p.redact; // 脱敏默认开
+      if (p.op === 'clear' || p.clear) {
+        L.recs.length = 0;
+        L.last = null;
+        return respond({ ok: true, data: { doc: L.doc, cursor: L.seq, cleared: true } });
+      }
+      var waitMs = Math.min(Math.max(+p.wait_ms || 0, 0), 20000);
+      var since = p.since != null ? +p.since : (waitMs ? L.seq : 0);
+      if (!waitMs) return respond({ ok: true, data: logList(p, since, on) });
+      var deadline = Date.now() + waitMs;
+      (function poll(){
+        try {
+          var data = logList(p, since, on);
+          if (data.items.length || data.navigated || Date.now() >= deadline) {
+            return respond({ ok: true, data: data });
+          }
+        } catch(e){ return respond({ ok: false, error: String((e && e.message) || e) }); }
+        setTimeout(poll, 200);
+      })();
+    } catch(e){ respond({ ok: false, error: String((e && e.message) || e) }); }
+  });
+
   /* ---------- fetch hook ---------- */
   (function(){
     var of = window.fetch;

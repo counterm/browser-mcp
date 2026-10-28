@@ -22,6 +22,7 @@
   | select{bid,value} | scroll{dy?,bid?} | hover{bid} | nav{url} | back | reload
   | eval{code} | cookies{op?,name?,value?} | storage{area?,key,value?}
   | upload{bid,files:[{name,mime,content}]} | wait{ms} | highlight{bid}
+  | netlog{op,...} | plog{op?,since?,doc?,kinds?,levels?,q?,limit?,text_max?,wait_ms?,clear?,redact?}
   bid 可用元素编号，也可直接给 CSS selector。
 """
 import asyncio
@@ -415,6 +416,20 @@ MCP_TOOLS = [
          "action": {"type": "string", "description": "命令名，如 snapshot / click / nav / eval / dom / screenshot"},
          "timeout": {"type": "number", "description": "等待秒数，默认 30，上限 120"}},
          required=["action"])},
+    {"name": "page_logs",
+     "description": "页面运行日志与异常读取（仅扩展版）。用途：排查页面报错、白屏、点击/请求无反应，或操作后确认是否引入前端错误；数据来自页面 console、未捕获异常、Promise 拒绝、资源加载失败、CSP 拦截。用法：首次不带 since 取基线并记下返回的 doc 与 cursor → 执行操作（page_call）→ 再带 since+doc 和 wait_ms≤20000 取增量（有异常立即返回，无异常等满超时返回空）。返回 items 含 kind/level/text/url/line/col/stack 与发生时间 t（epoch ms）及重复次数 count；页面导航后 doc 变化会返回 navigated:true 并从 0 重新计数。",
+     "inputSchema": mcp_schema({
+         "page": {"type": "string", "description": "页面标记 id 或 pid；只有一个在线页面时可省略"},
+         "since": {"type": "number", "description": "上次返回的 cursor，只取更新的记录"},
+         "doc": {"type": "string", "description": "上次返回的 doc；页面导航后 token 变化，会返回 navigated:true 并从头给"},
+         "kinds": {"type": "string", "description": "逗号分隔：console / exception / rejection / resource / csp，默认全部"},
+         "levels": {"type": "string", "description": "逗号分隔：error / warn / info / log / debug，默认全部"},
+         "q": {"type": "string", "description": "文本子串过滤"},
+         "limit": {"type": "number", "description": "返回条数上限，默认 50，最大 200"},
+         "text_max": {"type": "number", "description": "单条文本/堆栈输出字符上限，默认 600，最大 8192"},
+         "wait_ms": {"type": "number", "description": "长轮询等待毫秒，0（默认）立即返回，最大 20000"},
+         "clear": {"type": "boolean", "description": "先清空页面日志缓冲区"},
+         "redact": {"type": "boolean", "description": "脱敏手机号 / 邮箱 / token 等（默认 true）"}})},
 ]
 
 
@@ -456,6 +471,23 @@ async def mcp_tool(name, args):
         return mcp_text([public(p) for p in PAGES.values()]), False
     if name == "list_marks":
         return mcp_text(marks_list()), False
+    if name == "page_logs":
+        page, err = resolve_page(args.get("page"))
+        if err:
+            return err, True
+        cmd = {"action": "plog"}
+        for k in ("since", "doc", "kinds", "levels", "q", "limit", "text_max", "wait_ms", "clear", "redact"):
+            if args.get(k) is not None:
+                cmd[k] = args[k]
+        try:
+            wait_ms = min(max(float(args.get("wait_ms") or 0), 0), 20000)
+            res = await call_page(page, cmd, min(30 + wait_ms / 1000.0, 120))
+        except asyncio.TimeoutError:
+            return "页面响应超时（日志查询）", True
+        except (RuntimeError, TypeError, ValueError) as e:
+            return "日志查询下发失败：" + str(e), True
+        out = {"ok": bool(res.get("ok")), "data": res.get("data"), "error": res.get("error")}
+        return mcp_text(out), not out["ok"]
     if name not in ("page_snapshot", "page_call"):
         return "未知工具：" + str(name), True
     page, err = resolve_page(args.get("page"))
@@ -495,7 +527,7 @@ async def mcp_rpc(msg):
             "protocolVersion": params.get("protocolVersion") or "2025-03-26",
             "capabilities": {"tools": {}},
             "serverInfo": MCP_SERVER_INFO,
-            "instructions": "page-bridge：先 list_pages 发现页面，再用 page_snapshot 看快照、page_call 下发命令。"}}
+            "instructions": "page-bridge：先 list_pages 发现页面，再用 page_snapshot 看快照、page_call 下发命令。排查前端异常/白屏/点击无反应：先 page_logs 取基线（记下 doc+cursor），执行操作后带 since+doc 与 wait_ms 再取增量；不需要日志时不要调用。"}}
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "tools/list":

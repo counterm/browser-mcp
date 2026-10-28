@@ -350,6 +350,27 @@
       W.addEventListener('batb:netq:res', onRes);
       W.dispatchEvent(new CustomEvent('batb:netq', { detail: { id: qid, params: params || {} } }));
     }),
+
+    // 页面日志/异常查询（console / 未捕获异常 / Promise 拒绝 / 资源加载失败 / CSP）：
+    // 缓冲在页面 MAIN world 的 __BATB_LOG__，与 netlog 一样只能经 DOM 事件桥读取；
+    // wait_ms > 0 时页面侧长轮询等待新记录，超时需覆盖等待时长
+    plog: (params) => new Promise((resolve, reject) => {
+      const qid = Math.random().toString(36).slice(2);
+      const waitMs = Math.min(Math.max(Number(params && params.wait_ms) || 0, 0), 20000);
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('日志捕获层无响应（扩展更新后未刷新页面？请刷新后重试）'));
+      }, waitMs + 5000);
+      function onRes(ev) {
+        const d = ev.detail;
+        if (!d || d.id !== qid) return;
+        cleanup();
+        if (d.ok) resolve(d.data); else reject(new Error(d.error || 'plog 调用失败'));
+      }
+      function cleanup() { clearTimeout(timer); W.removeEventListener('batb:logq:res', onRes); }
+      W.addEventListener('batb:logq:res', onRes);
+      W.dispatchEvent(new CustomEvent('batb:logq', { detail: { id: qid, params: params || {} } }));
+    }),
   };
 
   function serialize(v, depth = 0) {

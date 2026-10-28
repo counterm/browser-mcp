@@ -15,7 +15,7 @@ importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
 
 const CONTENT_ACTIONS = [
   'ping', 'snapshot', 'dom', 'click', 'type', 'press', 'select', 'scroll', 'hover',
-  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog',
+  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog', 'plog',
 ];
 const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
 const CAPS = [...CONTENT_ACTIONS, ...EXTRA_ACTIONS];
