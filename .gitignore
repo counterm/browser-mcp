@@ -1,1 +1,8 @@
 __pycache__/
+
+# 本机 MCP 配置（含绝对路径），模板见 .mcp.example.json
+.mcp.json
+
+# IDE / 本地临时产物
+.trae/
+.trae-html-share-packages/
