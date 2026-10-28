@@ -1,8 +1,14 @@
+/*
+ * ⚠️ 已停止维护（DEPRECATED）—— 仅作存档保留。
+ * 页面接入请一律使用 Chrome 扩展（chrome-extension/），见 README「浏览器接入」。
+ *
+ */
+
 // ==UserScript==
 // @name         Page Bridge
 // @namespace    browser-agent
 // @version      0.1.16
-// @description  轻接入：油猴自动加载，把当前页面广播给本地 broker，供任意 CLI/IDE 发现并接入控制
+// @description  （已停止维护，仅作存档）轻接入：把当前页面广播给本地 broker，供任意 CLI/IDE 发现并接入控制
 // @match        *://*/*
 // @match        file:///*
 // @exclude      http://127.0.0.1:8766/*

@@ -12,3 +12,7 @@ __pycache__/
 
 # 本地产物（打包 / 私钥等，不入库）
 build/
+
+# 本机专用，不入库不推送
+AGENTS.md
+start-broker.bat

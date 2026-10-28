@@ -2,6 +2,16 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · 文档：全仓清理「油猴」表述，明确扩展为唯一接入方式
+
+- `broker.py`：模块 docstring 与「没有页面接入」错误提示改为 Chrome 扩展；`/lp/*` 长轮询标注为早期油猴版的兼容保留通道
+- `chrome-extension/background.js`：头部注释去掉「与油猴版的差异」对比，改为「扩展是唯一的页面接入方式」；「浏览器级动作（油猴做不到的部分）」改为「页面内脚本做不到的部分」
+- `AGENTS.md`：删除「扩展与油猴互斥」旧提示，改为「Chrome 扩展是唯一受支持的页面接入端，user.js 仅存档、勿安装勿投入更新」；`/lp/*` 标注为兼容保留
+- `page-bridge.user.js`：文件头加「已停止维护（DEPRECATED）、仅作存档」标注（以 `//` 注释置于 `==UserScript==` 块之前，不破坏元数据解析），@description 同步去掉油猴措辞
+- `docs/spec-url-filter.md`：「关联现状」改为回顾式表述（油猴版曾硬编码白名单，本功能产品化落地扩展版）
+- 保留不动：changelog 历史条目；工具箱「生成油猴脚本骨架」功能（`feats/build.js` 两套 + `toolbox-proto-map.md`，属面向用户的产品功能，与本项目接入方式无关）
+- `node --check` / `py_compile` 通过
+
 ## 2026-10-28 · 文档：README 标题改名 Browser MCP，浏览器接入移除油猴方案
 
 - README 标题（中英）「Browser Agent」改为「Browser MCP」

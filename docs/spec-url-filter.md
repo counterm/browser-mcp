@@ -2,7 +2,7 @@
 
 > 版本：v2.0（2026-10-19）
 > 适用范围：`chrome-extension/`（Chrome 扩展 MV3）
-> 关联现状：油猴版已有硬编码 `CFG.urlFilter`（正则白名单，`page-bridge.user.js`），本功能将其产品化并扩展到扩展版
+> 关联现状：早期油猴脚本版（`page-bridge.user.js`，已停止维护、仅作存档）曾有硬编码 `CFG.urlFilter` 正则白名单，本功能将其产品化并落地到扩展版
 
 ## 1. 背景与目标
 

@@ -1,13 +1,13 @@
-"""Page Bridge Broker — 页面（油猴）与外部 CLI/IDE 之间的本地注册 / 广播 / 转发中心。
+"""Page Bridge Broker — 页面（Chrome 扩展）与外部 CLI/IDE 之间的本地注册 / 广播 / 转发中心。
 
 依赖:  pip install aiohttp          (见 requirements.txt)
 运行:  python broker.py
        BRIDGE_PORT=8766 BRIDGE_TOKEN=xxx python broker.py   # 可选端口与鉴权
        python broker.py --stdio      # MCP 客户端拉起：broker 与 stdio MCP 同进程启动
 
-页面接入（page-bridge.user.js 自动完成）:
+页面接入（Chrome 扩展自动完成）:
   WS  /page                    WebSocket 通道
-  POST /lp/register|poll|reply HTTP 长轮询回退通道（绕页面 CSP）
+  POST /lp/register|poll|reply HTTP 长轮询通道（早期油猴脚本版的 CSP 回退通道，现为兼容保留）
 
 外部接入（任何 CLI / IDE，无需 SDK）:
   GET  /pages                    发现页面 -> [{id, url, title, viewport, mode, ago}]
@@ -478,7 +478,7 @@ def resolve_page(ref=None):
     if len(PAGES) == 1:
         return next(iter(PAGES.values())), None
     if not PAGES:
-        return None, "当前没有页面接入：确认 broker 在跑、扩展（或油猴脚本）已装、当前站点在白名单"
+        return None, "当前没有页面接入：确认 broker 在跑、Chrome 扩展已装、当前站点在白名单"
     refs = "、".join(f"{p['info'].get('mid') or p['id']}({p['info'].get('url')})" for p in PAGES.values())
     return None, "有多个在线页面，请用 page 参数指定标记 id 或 pid：" + refs
 
