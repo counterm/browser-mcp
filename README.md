@@ -3,25 +3,30 @@
 **简体中文** ｜ [English](./README.en.md)
 
 把浏览器页面通过本地通道开放给任意 CLI / IDE / Agent 控制的轻量体系。
-纯页面文本化（无截图依赖的多模态），LLM 用元素编号定位，适合做浏览器自动化编排。
+**`broker.py` 本身就是一个 MCP 服务器**（stdio / Streamable HTTP / SSE 三种传输），
+IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器。
+页面纯文本化（无截图依赖的多模态），LLM 用元素编号定位，适合做浏览器自动化编排。
 
 当前版本：**v0.1.16**（`chrome-extension/manifest.json` 与 `page-bridge.user.js` 保持一致）
 
 ```
-┌─ 浏览器（N 个标签页）──────────┐       ┌─ 本机 ───────────┐         ┌─ 任意外部工具 ────────────┐
-│ 接入端（扩展 或 油猴脚本）      │ WS/   │ broker.py       │  HTTP   │ CLI / IDE / MCP / curl   │
-│ ·自动加载，轻注入，零构建       │──────▶│ ·页面注册中心   │◀───────│ ·GET /pages   发现        │
-│ ·hello 广播(url/title/caps)   │       │ ·上线/下线广播    │         │ ·校验 URL 是否适合        │
-│ ·snapshot/动作执行/eval       │◀──────│ ·命令转发/等结果 │────────▶│ ·POST /call  接入操控     │
-└──────────────────────────────┘        └─────────────────┘         └───────────────────────────┘
+┌─ 浏览器（N 个标签页）──────────┐       ┌─ 本机 ───────────┐      ┌─ MCP 客户端（IDE / Agent / CLI）──┐
+│ 接入端（扩展 或 油猴脚本）      │ WS/   │ broker.py       │ MCP  │ ·list_pages / list_marks 发现   │
+│ ·自动加载，轻注入，零构建       │──────▶│ ·页面注册中心   │◀────▶│ ·page_snapshot 看页面           │
+│ ·hello 广播(url/title/caps)   │       │ ·上线/下线广播    │      │ ·page_call 操控页面              │
+│ ·snapshot/动作执行/eval       │◀──────│ ·命令转发/等结果 │─────▶│ ·page_logs 看页面异常           │
+└──────────────────────────────┘        └─────────────────┘      │ （也可直接走 HTTP /call）        │
+                                                                 └─────────────────────────────────┘
 ```
 
 ## 目录结构与文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `broker.py` | 本地注册/广播/转发中心。维护在线页面表，把外部命令转发给对应页面并等结果。**唯一需要常驻运行的进程** |
+| `broker.py` | 本地注册/广播/转发中心，**同时就是一个 MCP 服务器**。维护在线页面表，把外部命令转发给对应页面并等结果。通过 MCP 接入时它就是那个 MCP 服务进程；**唯一需要常驻运行的进程** |
 | `requirements.txt` | broker 的 Python 依赖（仅 aiohttp） |
+| `.mcp.json` | 本机生效的 MCP 接入配置（stdio 方式，MCP 客户端自动拉起 broker） |
+| `.mcp.example.json` | 可复制的 MCP 配置模板，把 `args` 里的路径改成你的 `broker.py` 绝对路径即可 |
 | `cli_client.py` | 外部 CLI 接入示例（纯标准库）：发现 → 校验 URL → 接入 → LLM 驱动循环 |
 | `chrome-extension/` | 接入端方案 A（推荐）：Chrome 扩展 MV3 |
 | ├ `manifest.json` | 扩展清单：权限、注入规则（`<all_urls>`，排除 broker 自身端口）、action popup、options 页 |
@@ -50,13 +55,15 @@ python broker.py
 #   BRIDGE_TOKEN=xxx          接口鉴权（外部请求需带 ?token=xxx 或 X-Bridge-Token 头）
 ```
 
+> 只用 MCP 的 stdio 方式时可以跳过这步——MCP 客户端会把 broker 自动拉起（见下文「MCP 接入」）。
+
 ### 2. 浏览器接入（二选一）
 
 **方案 A：Chrome 扩展（推荐）**
 
 1. Chrome 打开 `chrome://extensions`
 2. 右上角开启「开发者模式」
-3. 点「加载已解压的扩展程序」→ 选择 `chrome-extension` 目录
+3. 点「**加载未打包的扩展程序**」（Load unpacked）→ 选择本仓库的 `chrome-extension` 目录
 4. 打开任意网页，页面自动广播上线
 
 > 要操控本地 `file://` 页面，需在扩展详情页开启「允许访问文件网址」。
@@ -78,25 +85,76 @@ curl http://127.0.0.1:8766/pages
 
 ## 扩展安装与更新
 
-只支持「加载解压缩的扩展」，即直接加载 `chrome-extension` 目录（步骤见上文「快速开始 · 浏览器接入」），不做 zip / `.crx` / 商店分发。
+只支持开发者模式下的「**加载未打包的扩展程序**」（Load unpacked），即直接加载本仓库的 `chrome-extension` 目录（步骤见上文「快速开始 · 浏览器接入」），不做 zip / `.crx` / 商店分发。
 
 - **改了扩展代码**：`chrome://extensions` → 该扩展卡片点「重新加载」→ 刷新目标页面（`content.js` 才会带上最新逻辑）
 - **驱动本地 `file://` 页面**：扩展详情页开启「允许访问文件网址」
 - **卸载重装**：未指定私钥的未打包扩展，ID 由目录路径推导；重装后重新打开目标页面即可重新接入
 
-## 外部怎么接入（任何 CLI / IDE，无需 SDK）
+## MCP 接入（推荐）：把 broker 配成一个 MCP 服务器
+
+`broker.py` 自带完整 MCP 服务——**接入就是把它配成你客户端里的一个普通 MCP 服务器**，不需要另起 MCP 服务，也不需要额外依赖；页面接入、CLI 调用、MCP 客户端共用这一个进程。仓库根目录的 `.mcp.json` 就是本机生效的接入配置，`.mcp.example.json` 是可复制的模板。
+
+| 传输 | 地址 / 命令 | 说明 |
+|---|---|---|
+| stdio（推荐） | `python broker.py --stdio` | 由 MCP 客户端拉起，**broker 随 MCP 一起启动**，无需先跑 `start-broker.bat` |
+| Streamable HTTP | `http://127.0.0.1:8766/mcp` | 无状态，`POST` 直接返回 JSON-RPC 响应；`GET /mcp` 按规范返回 405；连的是已在运行的 broker |
+| 旧版 HTTP+SSE | `http://127.0.0.1:8766/sse` | `GET /sse` 下发 endpoint 事件 → `POST /messages?sessionId=...`，响应走 SSE；供只支持 SSE 的客户端 |
+
+**方式一：stdio 自动拉起（推荐）**——仓库根目录的 `.mcp.json` / `.mcp.example.json` 就是这个配置，把它加进你的 MCP 客户端配置（Trae 的 `.trae/mcp.json`、Claude Desktop 的 `claude_desktop_config.json`、项目级 `.mcp.json` 等均可）：
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": {
+      "command": "python",
+      "args": ["E:\\WORK\\PROJECT\\TOOLS\\browser-agent\\broker.py", "--stdio"]
+    }
+  }
+}
+```
+
+- 把 `args` 里的路径改成你的 `broker.py` **绝对路径**；走项目虚拟环境时把 `command` 换成 `…\\browser-agent\\.venv\\Scripts\\python.exe`
+- 进程内同时跑 stdio JSON-RPC 和 `127.0.0.1:8766` 中枢，页面照常接入；stdout 只留 JSON-RPC，日志全部走 stderr
+- 客户端断开（stdin EOF）后进程自动退出、端口释放
+- 同一端口只允许一个实例：已有 broker 在跑时 stdio 实例会报错退出，此时改用方式二
+- 不要把 `start-broker.bat` 配成 stdio 的 `command`——bat 的 echo 会污染 stdout
+
+**方式二：连已启动的 broker（HTTP URL）**（先跑 `start-broker.bat`；开了 `BRIDGE_TOKEN` 时 URL 追加 `?token=<token>`）：
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": { "url": "http://127.0.0.1:8766/mcp" }
+  }
+}
+```
+
+MCP 工具：
+
+| 工具 | 参数 | 作用 |
+|---|---|---|
+| `list_pages` | - | 发现当前接入的页面（id / mark / url / title / ago） |
+| `list_marks` | - | 标记列表（离线时也给最后一次 URL） |
+| `page_snapshot` | `page?, max?, text_max?` | 实时快照（交互元素带 bid 编号 + 正文）。输出过大时用 `max`（元素条数，默认 300）/ `text_max`（正文字符数，默认 6000，0 省略正文）裁剪 |
+| `page_call` | `page?, action, timeout?, ...` | 下发任意命令，参数同下方命令表（click / type / nav / eval / dom / screenshot…）。元素定位 bid / selector / text 三选一；`screenshot` 返回落盘路径 `{format, path, bytes}`，用 Read 工具直接看图 |
+| `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **仅扩展版**：读取页面运行日志与异常（console / 未捕获异常 / Promise 拒绝 / 资源加载失败 / CSP），带 `t / iso / perf` 发生时间、行列号与堆栈。用 `since` + `doc` 游标增量拉取；`wait_ms>0` 时页面侧长轮询等待新异常（≤20s），适合动作后确认是否报错 |
+
+`page` 可传标记 id 或 pid；只有一个在线页面时可省略。工具调用与 `/call` 走同一条转发链路，超时上限同样 120s。
+
+## HTTP API（不走 MCP 的直接接入）
+
+MCP 工具底层就是这套 HTTP 接口；自己写脚本/编排框架、或不想用 MCP 的客户端可以直接调（无需 SDK，curl 即可验证）。
 
 | 接口 | 用途 |
 |---|---|
 | `GET /pages` | 发现：在线页面列表（id / url / title / mode / ago / eval_mode） |
 | `GET /events` | 订阅广播（SSE）：`page_up` / `page_update` / `page_down` / `page_event` |
-| `POST /call/{pid}` | 接入并执行一条命令：body 为命令 JSON，`?timeout=30` 控制等待 |
+| `POST /call/{pid}` | 执行一条命令：body 为命令 JSON，`?timeout=30` 控制等待 |
 | `GET /marks` | 列出全部页桥标记：`mark` / `online` / `pid` / `url` / `title` |
 | `GET /mark/{mark}` | 按标记查网页：返回在线状态、`pid`、URL、标题（离线时给最后一次的 URL） |
 | `POST /mark/{mark}` | 按标记执行命令（body 同 `/call/{pid}`，如 `{"action":"snapshot"}`） |
-| `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合 IDE agent 常驻会话） |
-| `POST /mcp` | **MCP 服务器**（Streamable HTTP，无状态）：`initialize` / `tools/list` / `tools/call` |
-| `GET /sse` + `POST /messages` | **MCP 服务器**（旧版 HTTP+SSE 传输），供只支持 SSE 的客户端 |
+| `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合常驻会话） |
 
 ```powershell
 # 发现并校验 URL（"是否适合接入"由外部自己判断，比如正则匹配域名）
@@ -111,57 +169,6 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"click\",\"bid
 # 截图（仅扩展版支持，返回 base64 PNG）
 curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}"
 ```
-
-## MCP 接入（broker 自带，只跑一个进程）
-
-`broker.py` 直接提供 MCP 服务（HTTP 与 broker 同端口；stdio 则随 MCP 客户端拉起）：页面接入、CLI 调用、MCP 客户端共用这一个进程，不需要另起 MCP 服务，也不需要额外依赖。
-
-| 传输 | 地址 / 命令 | 说明 |
-|---|---|---|
-| Streamable HTTP（推荐） | `http://127.0.0.1:8766/mcp` | 无状态，`POST` 直接返回 JSON-RPC 响应；`GET /mcp` 按规范返回 405 |
-| 旧版 HTTP+SSE | `http://127.0.0.1:8766/sse` | `GET /sse` 下发 endpoint 事件 → `POST /messages?sessionId=...`，响应走 SSE |
-| stdio | `python broker.py --stdio` | 由 MCP 客户端拉起，**broker 随 MCP 一起启动**，无需先跑 `start-broker.bat` |
-
-**方式一：连已启动的 broker**（先跑 `start-broker.bat`；开了 `BRIDGE_TOKEN` 时 URL 追加 `?token=<token>`）：
-
-```json
-{
-  "mcpServers": {
-    "page-bridge": { "url": "http://127.0.0.1:8766/mcp" }
-  }
-}
-```
-
-**方式二：让 MCP 客户端自动拉起（stdio，进程即 broker）**：
-
-```json
-{
-  "mcpServers": {
-    "page-bridge": {
-      "command": "python",
-      "args": ["E:\\WORK\\PROJECT\\TOOLS\\browser-agent\\broker.py", "--stdio"]
-    }
-  }
-}
-```
-
-- 用绝对路径；走项目虚拟环境时把 `command` 换成 `…\\browser-agent\\.venv\\Scripts\\python.exe`
-- 进程内同时跑 stdio JSON-RPC 和 `127.0.0.1:8766` 中枢，页面照常接入；stdout 只留 JSON-RPC，日志全部走 stderr
-- 客户端断开（stdin EOF）后进程自动退出、端口释放
-- 同一端口只允许一个实例：已有 broker 在跑时 stdio 实例会报错退出，此时改用方式一
-- 不要把 `start-broker.bat` 配成 stdio 的 `command`——bat 的 echo 会污染 stdout
-
-MCP 工具：
-
-| 工具 | 参数 | 作用 |
-|---|---|---|
-| `list_pages` | - | 发现当前接入的页面（id / mark / url / title / ago） |
-| `list_marks` | - | 标记列表（离线时也给最后一次 URL） |
-| `page_snapshot` | `page?, max?, text_max?` | 实时快照（交互元素带 bid 编号 + 正文）。输出过大时用 `max`（元素条数，默认 300）/ `text_max`（正文字符数，默认 6000，0 省略正文）裁剪 |
-| `page_call` | `page?, action, timeout?, ...` | 下发任意命令，参数同下方命令表（click / type / nav / eval / dom / screenshot…）。元素定位 bid / selector / text 三选一；`screenshot` 返回落盘路径 `{format, path, bytes}`，用 Read 工具直接看图 |
-| `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **仅扩展版**：读取页面运行日志与异常（console / 未捕获异常 / Promise 拒绝 / 资源加载失败 / CSP），带 `t / iso / perf` 发生时间、行列号与堆栈。用 `since` + `doc` 游标增量拉取；`wait_ms>0` 时页面侧长轮询等待新异常（≤20s），适合动作后确认是否报错 |
-
-`page` 可传标记 id 或 pid；只有一个在线页面时可省略。工具调用与 `/call` 走同一条转发链路，超时上限同样 120s。
 
 ## 命令一览
 

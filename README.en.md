@@ -3,26 +3,30 @@
 [简体中文](./README.md) ｜ **English**
 
 A lightweight system that exposes browser pages to any CLI / IDE / Agent over a local channel.
+**`broker.py` is itself an MCP server** (stdio / Streamable HTTP / SSE): IDEs and agents control the browser by configuring the broker as a regular MCP server.
 Pages are turned into text (no screenshot-dependent multimodality); the LLM locates elements by their numeric IDs, which suits browser automation orchestration.
 
 Current version: **v0.1.16** (kept in sync between `chrome-extension/manifest.json` and `page-bridge.user.js`)
 
 ```
-            Browser (N tabs)                   Local machine                   Any external tool
-┌──────────────────────────┐         ┌────────────────────────┐        ┌─────────────────────────┐
-│ extension / userscript   │         │ broker.py              │        │ CLI / IDE / MCP / curl  │
-│ · hello broadcast        │  WS/   │ · page registry        │ HTTP   │ · GET /pages            │
-│ · snapshot / actions     │────────▶│ · forward + await      │──────▶│ · POST /call            │
-│ · eval                   │◀────────│ · up/down broadcast    │◀───────│ · WS /client            │
-└──────────────────────────┘         └────────────────────────┘        └─────────────────────────┘
+            Browser (N tabs)                   Local machine                MCP client (IDE / Agent / CLI)
+┌──────────────────────────┐         ┌────────────────────────┐        ┌─────────────────────────────┐
+│ extension / userscript   │         │ broker.py              │  MCP   │ ·list_pages / list_marks    │
+│ · hello broadcast        │  WS/   │ · page registry        │◀──────▶│ ·page_snapshot  view        │
+│ · snapshot / actions     │────────▶│ · forward + await      │        │ ·page_call      control     │
+│ · eval                   │◀────────│ · up/down broadcast    │───────▶│ ·page_logs      page errors │
+└──────────────────────────┘         └────────────────────────┘        │ (or plain HTTP /call)       │
+                                                                       └─────────────────────────────┘
 ```
 
 ### Directory and files
 
 | File | Purpose |
 |---|---|
-| `broker.py` | Local registry / broadcast / forwarding hub. Keeps the online-page table, forwards external commands to the right page and waits for results. **The only process that must stay running** |
+| `broker.py` | Local registry / broadcast / forwarding hub, **and an MCP server at the same time**. Keeps the online-page table, forwards external commands to the right page and waits for results. When accessed via MCP it *is* the MCP server process; **the only process that must stay running** |
 | `requirements.txt` | Python dependencies for the broker (aiohttp only) |
+| `.mcp.json` | The machine-local MCP client config (stdio; the MCP client launches the broker automatically) |
+| `.mcp.example.json` | A copyable MCP config template — change the path in `args` to your own absolute `broker.py` path |
 | `cli_client.py` | Reference external CLI client (stdlib only): discover → validate URL → attach → LLM-driven loop |
 | `chrome-extension/` | Connector option A (recommended): Chrome extension MV3 |
 | ├ `manifest.json` | Extension manifest: permissions, injection rules (`<all_urls>`, excluding the broker's own port), action popup, options page |
@@ -51,13 +55,15 @@ python broker.py
 #   BRIDGE_TOKEN=xxx          auth for the API (external requests need ?token=xxx or an X-Bridge-Token header)
 ```
 
+> You can skip this step if you only use the MCP stdio transport — the MCP client launches the broker automatically (see "MCP" below).
+
 #### 2. Connect a browser (pick one)
 
 **Option A: Chrome extension (recommended)**
 
 1. Open `chrome://extensions` in Chrome
 2. Enable "Developer mode" in the top-right corner
-3. Click "Load unpacked" → select the `chrome-extension` directory
+3. Click "**Load unpacked**" → select this repo's `chrome-extension` directory
 4. Open any web page; it broadcasts itself online automatically
 
 > To drive local `file://` pages, enable "Allow access to file URLs" on the extension's details page.
@@ -79,25 +85,76 @@ Open a few tabs and each one shows up as a record. The list updates automaticall
 
 ### Installing and updating the extension
 
-Only "Load unpacked" is supported — load the `chrome-extension` directory directly (see Quick start → Connect a browser). No zip / `.crx` / store distribution.
+Only "**Load unpacked**" in developer mode is supported — load this repo's `chrome-extension` directory directly (see Quick start → Connect a browser). No zip / `.crx` / store distribution.
 
 - **After changing extension code**: `chrome://extensions` → click "Reload" on the extension card → refresh the target page (only then does `content.js` run the latest logic)
 - **To drive local `file://` pages**: enable "Allow access to file URLs" on the extension details page
 - **Uninstall / reinstall**: an unpacked extension has no fixed key, so its ID derives from the directory path; just reopen the target pages to reconnect
 
-### External integration (any CLI / IDE, no SDK)
+### MCP (recommended): configure the broker as an MCP server
+
+`broker.py` ships with a full MCP server — **integrating means configuring it as a regular MCP server in your client**; no separate MCP service and no extra dependencies. Page connections, CLI calls and MCP clients all share this one process. The `.mcp.json` in the repo root is the machine-local config, and `.mcp.example.json` is a copyable template.
+
+| Transport | Address / command | Notes |
+|---|---|---|
+| stdio (recommended) | `python broker.py --stdio` | Launched by the MCP client; **the broker starts together with MCP**, no need to run `start-broker.bat` first |
+| Streamable HTTP | `http://127.0.0.1:8766/mcp` | Stateless; `POST` returns a JSON-RPC response directly; `GET /mcp` returns 405 per the spec; connects to an already-running broker |
+| Legacy HTTP+SSE | `http://127.0.0.1:8766/sse` | `GET /sse` emits an endpoint event → `POST /messages?sessionId=...`; responses go over SSE; for clients that only support SSE |
+
+**Option 1: stdio auto-launch (recommended)** — the `.mcp.json` / `.mcp.example.json` in the repo root are exactly this config; add it to your MCP client config (Trae's `.trae/mcp.json`, Claude Desktop's `claude_desktop_config.json`, a project-level `.mcp.json`, etc.):
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": {
+      "command": "python",
+      "args": ["E:\\WORK\\PROJECT\\TOOLS\\browser-agent\\broker.py", "--stdio"]
+    }
+  }
+}
+```
+
+- Change the path in `args` to the **absolute path** of your `broker.py`; with the project virtualenv, set `command` to `…\\browser-agent\\.venv\\Scripts\\python.exe`
+- The process runs both stdio JSON-RPC and the `127.0.0.1:8766` hub, so pages connect as usual; stdout carries only JSON-RPC, all logs go to stderr
+- When the client disconnects (stdin EOF) the process exits automatically and frees the port
+- Only one instance may use a port: if a broker is already running, the stdio instance exits with an error — use option 2 in that case
+- Do not configure `start-broker.bat` as the stdio `command` — the bat file's echo would pollute stdout
+
+**Option 2: connect to a running broker (HTTP URL)** (start `start-broker.bat` first; if `BRIDGE_TOKEN` is set, append `?token=<token>` to the URL):
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": { "url": "http://127.0.0.1:8766/mcp" }
+  }
+}
+```
+
+MCP tools:
+
+| Tool | Parameters | Purpose |
+|---|---|---|
+| `list_pages` | - | Discover currently connected pages (id / mark / url / title / ago) |
+| `list_marks` | - | List marks (offline pages still report their last URL) |
+| `page_snapshot` | `page?, max?, text_max?` | Live snapshot (interactive elements with bid numbers plus body text). Trim oversized output with `max` (element count, default 300) / `text_max` (body text chars, default 6000, 0 omits text) |
+| `page_call` | `page?, action, timeout?, ...` | Dispatch any command; parameters match the command table below (click / type / nav / eval / dom / screenshot…). Locate elements via bid / selector / text; `screenshot` returns a saved-file path `{format, path, bytes}` — view it with the Read tool |
+| `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **Extension only**: read page runtime logs and errors (console / uncaught exceptions / promise rejections / failed resources / CSP), with `t / iso / perf` timestamps, line/column numbers and stacks. Pull incrementally with the `since` + `doc` cursors; with `wait_ms>0` the page long-polls for new errors (≤20s), handy for confirming whether an action threw |
+
+`page` accepts a mark id or pid; it can be omitted when only one page is online. Tool calls share the same forwarding path as `/call`, with the same 120s timeout ceiling.
+
+### HTTP API (direct integration without MCP)
+
+The MCP tools are a thin layer over these HTTP endpoints; scripts, custom orchestration frameworks, or clients that skip MCP can call them directly (no SDK; curl is enough to try).
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /pages` | Discover: list of online pages (id / url / title / mode / ago / eval_mode) |
 | `GET /events` | Subscribe to broadcasts (SSE): `page_up` / `page_update` / `page_down` / `page_event` |
-| `POST /call/{pid}` | Attach and execute one command: body is the command JSON, `?timeout=30` controls the wait |
+| `POST /call/{pid}` | Execute one command: body is the command JSON, `?timeout=30` controls the wait |
 | `GET /marks` | List all page-bridge marks: `mark` / `online` / `pid` / `url` / `title` |
 | `GET /mark/{mark}` | Look up a page by mark: returns online state, `pid`, URL, title (last known URL when offline) |
 | `POST /mark/{mark}` | Execute a command by mark (body same as `/call/{pid}`, e.g. `{"action":"snapshot"}`) |
-| `WS /client` | Long-lived connection: broadcasts + attach + bidirectional command stream (good for a resident IDE agent session) |
-| `POST /mcp` | **MCP server** (Streamable HTTP, stateless): `initialize` / `tools/list` / `tools/call` |
-| `GET /sse` + `POST /messages` | **MCP server** (legacy HTTP+SSE transport) for clients that only support SSE |
+| `WS /client` | Long-lived connection: broadcasts + attach + bidirectional command stream (good for resident sessions) |
 
 ```powershell
 # Discover and validate URLs (whether a page is "suitable" is up to the external client, e.g. regex on the domain)
@@ -112,57 +169,6 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"click\",\"bid
 # Screenshot (extension only, returns base64 PNG)
 curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}"
 ```
-
-### MCP (built into the broker, one process)
-
-`broker.py` serves MCP directly (HTTP shares the broker's port; stdio is launched by the MCP client): page connections, CLI calls and MCP clients all share this one process — no separate MCP service and no extra dependencies.
-
-| Transport | Address / command | Notes |
-|---|---|---|
-| Streamable HTTP (recommended) | `http://127.0.0.1:8766/mcp` | Stateless; `POST` returns a JSON-RPC response directly; `GET /mcp` returns 405 per the spec |
-| Legacy HTTP+SSE | `http://127.0.0.1:8766/sse` | `GET /sse` emits an endpoint event → `POST /messages?sessionId=...`; responses go over SSE |
-| stdio | `python broker.py --stdio` | Launched by the MCP client; **the broker starts together with MCP**, no need to run `start-broker.bat` first |
-
-**Option 1: connect to a running broker** (start `start-broker.bat` first; if `BRIDGE_TOKEN` is set, append `?token=<token>` to the URL):
-
-```json
-{
-  "mcpServers": {
-    "page-bridge": { "url": "http://127.0.0.1:8766/mcp" }
-  }
-}
-```
-
-**Option 2: let the MCP client launch it (stdio, the process is the broker)**:
-
-```json
-{
-  "mcpServers": {
-    "page-bridge": {
-      "command": "python",
-      "args": ["E:\\WORK\\PROJECT\\TOOLS\\browser-agent\\broker.py", "--stdio"]
-    }
-  }
-}
-```
-
-- Use absolute paths; with the project virtualenv, set `command` to `…\\browser-agent\\.venv\\Scripts\\python.exe`
-- The process runs both stdio JSON-RPC and the `127.0.0.1:8766` hub, so pages connect as usual; stdout carries only JSON-RPC, all logs go to stderr
-- When the client disconnects (stdin EOF) the process exits automatically and frees the port
-- Only one instance may use a port: if a broker is already running, the stdio instance exits with an error — use option 1 in that case
-- Do not configure `start-broker.bat` as the stdio `command` — the bat file's echo would pollute stdout
-
-MCP tools:
-
-| Tool | Parameters | Purpose |
-|---|---|---|
-| `list_pages` | - | Discover currently connected pages (id / mark / url / title / ago) |
-| `list_marks` | - | List marks (offline pages still report their last URL) |
-| `page_snapshot` | `page?, max?, text_max?` | Live snapshot (interactive elements with bid numbers plus body text). Trim oversized output with `max` (element count, default 300) / `text_max` (body text chars, default 6000, 0 omits text) |
-| `page_call` | `page?, action, timeout?, ...` | Dispatch any command; parameters match the command table below (click / type / nav / eval / dom / screenshot…). Locate elements via bid / selector / text; `screenshot` returns a saved-file path `{format, path, bytes}` — view it with the Read tool |
-| `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **Extension only**: read page runtime logs and errors (console / uncaught exceptions / promise rejections / failed resources / CSP), with `t / iso / perf` timestamps, line/column numbers and stacks. Pull incrementally with the `since` + `doc` cursors; with `wait_ms>0` the page long-polls for new errors (≤20s), handy for confirming whether an action threw |
-
-`page` accepts a mark id or pid; it can be omitted when only one page is online. Tool calls share the same forwarding path as `/call`, with the same 120s timeout ceiling.
 
 ### Commands
 

@@ -23,12 +23,15 @@
   | eval{code} | cookies{op?,name?,value?} | storage{area?,key,value?}
   | upload{bid,files:[{name,mime,content}]} | wait{ms} | highlight{bid}
   | netlog{op,...} | plog{op?,since?,doc?,kinds?,levels?,q?,limit?,text_max?,wait_ms?,clear?,redact?}
-  bid 可用元素编号，也可直接给 CSS selector。
+  定位参数 bid / selector / text 三选一（bid=快照元素编号，selector=CSS，text=按可见文本匹配）。
+  关联键为保留名 __mid；命令参数可合法使用 id（如 netlog get {"id":N}）。
 """
 import asyncio
+import base64
 import io
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -40,6 +43,26 @@ PORT = int(os.environ.get("BRIDGE_PORT", "8766"))
 # stdio 模式：IDE 的 MCP 客户端用 command 拉起本进程，broker 与 MCP 同进程启动
 STDIO = ("--stdio" in sys.argv) or os.environ.get("BRIDGE_MCP_STDIO") == "1"
 _STDOUT = None   # stdio 模式下的 JSON-RPC 专用输出流（原始 stdout）
+
+# MCP 截图落盘目录：page_call 拿到 dataUrl 时解码存这里并返回路径，避免 base64 撑爆上下文
+SHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".screenshots")
+
+
+def save_dataurl(dataurl, tag="page"):
+    """把 data:image/...;base64,xxx 解码存盘，返回文件路径；失败返回 None。"""
+    m = re.match(r"^data:image/(png|jpeg|webp);base64,", dataurl or "")
+    if not m:
+        return None
+    try:
+        os.makedirs(SHOTS_DIR, exist_ok=True)
+        path = os.path.join(
+            SHOTS_DIR, f"shot-{time.strftime('%Y%m%d-%H%M%S')}-{tag}-{uuid.uuid4().hex[:4]}.{m.group(1)}")
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(dataurl.split(",", 1)[1]))
+        return path
+    except Exception:
+        return None
+
 
 PAGES = {}     # pid -> {'info': dict, 'ws': ws|None, 'queue': Queue|None, 'last_seen': float, 'mode': str}
 MARKS = {}     # mark id -> {'pid': str, 'online': bool, 'info': dict, 'last_seen': float}
@@ -131,7 +154,11 @@ async def call_page(page: dict, cmd: dict, timeout: float = 30.0) -> dict:
     mid = uuid.uuid4().hex[:8]
     fut = asyncio.get_running_loop().create_future()
     WAITERS[mid] = (fut, page["id"])
-    payload = {**cmd, "id": mid}
+    # 关联用保留键 __mid：命令参数里的 id 不再被覆盖（netlog get/curl 的 {"id":N} 此前会被
+    # 传输层覆盖导致永远 record not found）；没带 id 时补一个兼容旧版页面端
+    payload = {**cmd, "__mid": mid}
+    if "id" not in cmd:
+        payload["id"] = mid
     try:
         if page["ws"] is not None and not page["ws"].closed:
             await page["ws"].send_json(payload)
@@ -406,11 +433,13 @@ MCP_TOOLS = [
      "description": "列出全部页桥标记及其在线状态；页面离线时仍返回最后一次的 url / title。",
      "inputSchema": mcp_schema()},
     {"name": "page_snapshot",
-     "description": "读取指定页面的实时快照（交互元素带 bid 编号 + 正文），是操作页面前的“眼睛”。",
+     "description": "读取指定页面的实时快照（交互元素带 bid 编号 + 正文），是操作页面前的“眼睛”。输出过大时可用 max（元素条数，默认 300）与 text_max（正文字符数，默认 6000，0 为省略正文）裁剪；只需局部 DOM 时改用 page_call {action:\"dom\"}。",
      "inputSchema": mcp_schema({
-         "page": {"type": "string", "description": "页面标记 id 或 pid；只有一个在线页面时可省略"}})},
+         "page": {"type": "string", "description": "页面标记 id 或 pid；只有一个在线页面时可省略"},
+         "max": {"type": "number", "description": "交互元素条数上限，默认 300，最大 1000"},
+         "text_max": {"type": "number", "description": "正文字符上限，默认 6000，最大 30000，0 省略正文"}})},
     {"name": "page_call",
-     "description": "向指定页面下发一条命令并等待结果：click / type / press / select / scroll / hover / nav / back / reload / eval / dom / cookies / storage / upload / wait / highlight / screenshot / tab_* 等，参数同 README 命令表。",
+     "description": "向指定页面下发一条命令并等待结果：click / type / press / select / scroll / hover / nav / back / reload / eval / dom / cookies / storage / upload / wait / highlight / screenshot / tab_* 等，参数同 README 命令表。元素定位参数 bid / selector / text 三选一（快照没给 bid 的元素用 text 按可见文本也能点）。screenshot 返回落盘路径 {format,path,bytes}（base64 已存到 .screenshots/ 目录，避免大输出被截断），用 Read 工具直接看图。",
      "inputSchema": mcp_schema({
          "page": {"type": "string", "description": "页面标记 id 或 pid；只有一个在线页面时可省略"},
          "action": {"type": "string", "description": "命令名，如 snapshot / click / nav / eval / dom / screenshot"},
@@ -495,6 +524,9 @@ async def mcp_tool(name, args):
         return err, True
     if name == "page_snapshot":
         cmd = {"action": "snapshot"}
+        for k in ("max", "text_max"):
+            if args.get(k) is not None:
+                cmd[k] = args[k]
     else:
         cmd = dict(args.get("cmd") or {})
         for k, v in args.items():
@@ -509,6 +541,15 @@ async def mcp_tool(name, args):
         return "页面响应超时", True
     except (RuntimeError, TypeError, ValueError) as e:
         return "命令下发失败：" + str(e), True
+    data = res.get("data")
+    # 截图：base64 落盘换路径，避免大输出被 MCP 客户端截断（失败时原样返回 dataUrl）
+    if isinstance(data, dict) and isinstance(data.get("dataUrl"), str):
+        path = save_dataurl(data["dataUrl"], tag=page["id"])
+        if path:
+            data = {k: v for k, v in data.items() if k != "dataUrl"}
+            data["path"] = path
+            data["bytes"] = os.path.getsize(path)
+            res = {**res, "data": data}
     out = {"ok": bool(res.get("ok")), "data": res.get("data"), "error": res.get("error")}
     return mcp_text(out), not out["ok"]
 

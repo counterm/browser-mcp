@@ -55,22 +55,56 @@ const EVAL_HINT =
   ' 页面 CSP 禁止 eval。可开启绕过：chrome://extensions → Page Bridge → 详情 → 打开「允许用户脚本」(Allow user scripts)。'
   + '⚠️ 开启后本代理可在页面执行任意 JS，仅在你自己可控的浏览器上开启。';
 
-function userScriptsReady() {
+// Edge 等 Chromium 系浏览器可能带开关 UI 但缺 userScripts API 实现；UA 可区分
+const IS_EDGE = /Edg\//.test(navigator.userAgent);
+const EVAL_HINT_NO_API = IS_EDGE
+  ? ' 当前浏览器（Edge）未提供 userScripts API，无法绕过页面 CSP。可用 Chrome（≥135）加载本扩展后在 Chrome 里操作，或改用 dom/click 等 DOM 动作。'
+  : ' 当前浏览器未提供 userScripts API（需 Chromium ≥135），无法绕过页面 CSP。';
+
+function userScriptsDetail() {
   try {
-    chrome.userScripts; // 属性访问：权限缺失/版本过低时抛错
-    chrome.userScripts.getScripts(); // 调用：用户未开启「允许用户脚本」时抛错
-    return !!(chrome.userScripts.execute && chrome.userScripts.configureWorld);
-  } catch { return false; }
+    if (!chrome.userScripts) return { ok: false, why: 'no-api' };
+    try {
+      chrome.userScripts.getScripts(); // 未开启「允许用户脚本」时抛错
+    } catch {
+      return { ok: false, why: 'toggle-off' };
+    }
+    if (!chrome.userScripts.execute || !chrome.userScripts.configureWorld) return { ok: false, why: 'no-execute' };
+    return { ok: true, why: '' };
+  } catch {
+    return { ok: false, why: 'unknown' };
+  }
 }
+
+function userScriptsReady() { return userScriptsDetail().ok; }
 
 const evalMode = () => (userScriptsReady() ? 'userscript' : 'fallback');
 
-const pendingEval = new Map(); // evalId -> { resolve, reject, timer }
+// USER_SCRIPT world 配置：messaging + 显式 csp。world 默认**继承页面 CSP**，
+// 不放开 unsafe-eval 的话 wrapper 里的 eval 会被拦（实测）；此配置在扩展重载后失效，需重设
 let worldConfigured = false;
+function configureUserWorld() {
+  if (worldConfigured) return;
+  try {
+    chrome.userScripts.configureWorld({
+      messaging: true,
+      csp: "script-src 'self' 'unsafe-eval'",
+    });
+    worldConfigured = true;
+  } catch (err) {
+    log(`configureWorld failed: ${err.message || err}`);
+  }
+}
 
-/** 注入到 USER_SCRIPT world 执行的函数体（eval 不受页面 CSP 限制），结果经 runtime 消息回传 */
+/**
+ * 注入到 USER_SCRIPT world 执行的函数体。结果经**共享 DOM 属性**回传：
+ * USER_SCRIPT world 与内容脚本共享 DOM，eval 后把结果写到 <html data-ba-eval-<id>>，
+ * SW 轮询 content.js 的 eval_result 动作取回——不依赖 configureWorld messaging
+ * （实测部分 Chrome 版本该链路不通，且消息失败在 world 内是黑洞，无法报错）。
+ */
 function __bridgeUserEval(code, evalId) {
   (async () => {
+    const attr = 'data-ba-eval-' + evalId;
     const ser = (v, d = 0) => {
       if (v === undefined) return 'undefined';
       if (v instanceof Element) return v.outerHTML.slice(0, 2000);
@@ -85,28 +119,47 @@ function __bridgeUserEval(code, evalId) {
         }, 1) || String(v);
       } catch { return String(v); }
     };
+    let out;
     try {
-      const r = await eval(code);
-      chrome.runtime.sendMessage({ __bridge_eval: evalId, ok: true, data: ser(r) });
+      out = { ok: true, data: ser(await eval(code)) };
     } catch (err) {
-      chrome.runtime.sendMessage({ __bridge_eval: evalId, ok: false, error: String((err && err.message) || err) });
+      out = { ok: false, data: String((err && err.message) || err) };
+    }
+    try {
+      document.documentElement.setAttribute(attr, JSON.stringify(out));
+    } catch (err) {
+      try { document.documentElement.setAttribute(attr,
+        JSON.stringify({ ok: false, data: 'result write failed: ' + String((err && err.message) || err) }));
+      } catch { /* documentElement 都不可写时无解，等 SW 超时 */ }
     }
   })();
 }
 
 async function evalViaUserScripts(e, code) {
-  if (!worldConfigured) {
-    try { chrome.userScripts.configureWorld({ messaging: true }); worldConfigured = true; } catch {}
-  }
-  const evalId = crypto.randomUUID();
+  const evalId = crypto.randomUUID().replace(/-/g, '');
+  let timer = null;
+  let poll = null;
   const p = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingEval.delete(evalId);
-      reject(new Error('eval timeout (userscript, 25s)'));
-    }, 25000);
-    pendingEval.set(evalId, { resolve, reject, timer });
+    timer = setTimeout(() => {
+      clearInterval(poll);
+      reject(new Error('eval timeout (userscript, 20s)：结果未回传，可重试或改用 dom/click 等 DOM 动作'));
+    }, 20000);
+    poll = setInterval(async () => {
+      try {
+        const res = await chrome.tabs.sendMessage(e.tabId, { __bridge_cmd: { action: 'eval_result', evalId } });
+        if (res && res.ok && res.data) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          try {
+            const obj = JSON.parse(res.data);
+            obj.ok ? resolve(obj.data) : reject(new Error(obj.data));
+          } catch { resolve(res.data); }
+        }
+      } catch { /* 内容脚本暂不可达（导航中）——继续等 */ }
+    }, 250);
   });
   const wrapper = `(${__bridgeUserEval})(${JSON.stringify(code)},${JSON.stringify(evalId)})`;
+  configureUserWorld(); // csp/messaging 配置必须在 execute 注入前生效
   try {
     await chrome.userScripts.execute({
       target: { tabId: e.tabId },
@@ -115,23 +168,32 @@ async function evalViaUserScripts(e, code) {
       js: [{ code: wrapper }],
     });
   } catch (err) {
-    const pe = pendingEval.get(evalId);
-    if (pe) { clearTimeout(pe.timer); pendingEval.delete(evalId); }
+    clearInterval(poll);
+    clearTimeout(timer);
     throw new Error(`userScripts.execute failed: ${err.message || err}`);
   }
   return p;
 }
 
-/** eval 总入口：优先 userScripts；不可用或失败时回落内容脚本（可能被 CSP 拦，此时返回带开启指引的错误） */
+/** eval 总入口：优先 userScripts（结果走 DOM 通道）；失败时报真实错误（回落内容脚本只会撞 CSP，是噪音） */
 async function doEval(e, code) {
-  if (evalMode() === 'userscript') {
-    try { return await evalViaUserScripts(e, code); } catch (err) { log(err.message || err); }
+  const detail = userScriptsDetail();
+  if (detail.ok) {
+    try { return await evalViaUserScripts(e, code); }
+    catch (err) {
+      const usErr = String(err.message || err);
+      log(usErr);
+      throw new Error(usErr);
+    }
   }
   const res = await chrome.tabs.sendMessage(e.tabId, { __bridge_cmd: { action: 'eval', code } });
   if (res && res.ok) return res.data;
   const raw = (res && res.error) || 'no response';
   const csp = /Content Security Policy|unsafe-eval/i.test(raw);
-  throw new Error(raw + (csp ? EVAL_HINT : ''));
+  const hint = csp
+    ? (detail.why === 'no-api' || detail.why === 'no-execute' ? EVAL_HINT_NO_API : EVAL_HINT)
+    : '';
+  throw new Error(raw + hint);
 }
 
 /* ============ 站点过滤（白名单） ============
@@ -435,7 +497,9 @@ function dropEntry(tabId, reason) {
   clearInterval(e.hb);
   clearTimeout(e.retryTimer);
   try { e.ws && e.ws.close(); } catch {}
-  chrome.storage.session.remove(['neth:' + tabId, 'mark:' + tabId]).catch(() => {}); // 接口捕获/页桥标记：tab 没了记录一并清
+  // mark:<tabId> 不在这里清：bye（导航/刷新）后 tab 还在，标记要跨导航保持稳定，
+  // 新页面会带回同一个 mark 重新注册；只有 tab 真正关闭（onRemoved）才清
+  chrome.storage.session.remove('neth:' + tabId).catch(() => {}); // 接口捕获：tab 没了记录一并清
   tabs.delete(tabId);
   log(`tab${tabId} dropped: ${reason}`);
 }
@@ -484,39 +548,45 @@ function scheduleRetry(e) {
 /* ============ 命令路由 ============ */
 
 async function route(e, cmd) {
-  if (!cmd || cmd.id == null) return;
+  // 关联 id：新 broker 用保留键 __mid（命令参数可合法使用 id，如 netlog get），
+  // 旧 broker 仍用 id 覆盖传参——两者都兼容，__mid 优先
+  const mid = cmd.__mid ?? cmd.id;
+  if (!cmd || mid == null) return;
   const bg = BACKGROUND_ACTIONS[cmd.action];
   if (bg) {
     try {
-      sendWS(e, { type: 'result', id: cmd.id, ok: true, data: (await bg(cmd, e)) ?? null });
+      sendWS(e, { type: 'result', id: mid, ok: true, data: (await bg(cmd, e)) ?? null });
     } catch (err) {
-      sendWS(e, { type: 'result', id: cmd.id, ok: false, error: String((err && err.message) || err) });
+      sendWS(e, { type: 'result', id: mid, ok: false, error: String((err && err.message) || err) });
     }
     return;
   }
   if (cmd.action === 'eval') {
     try {
-      sendWS(e, { type: 'result', id: cmd.id, ok: true, data: (await doEval(e, cmd.code || '')) ?? null });
+      sendWS(e, { type: 'result', id: mid, ok: true, data: (await doEval(e, cmd.code || '')) ?? null });
     } catch (err) {
-      sendWS(e, { type: 'result', id: cmd.id, ok: false, error: String((err && err.message) || err) });
+      sendWS(e, { type: 'result', id: mid, ok: false, error: String((err && err.message) || err) });
     }
     return;
   }
   if (!CONTENT_ACTIONS.includes(cmd.action)) {
-    sendWS(e, { type: 'result', id: cmd.id, ok: false, error: `unknown action: ${cmd.action}` });
+    sendWS(e, { type: 'result', id: mid, ok: false, error: `unknown action: ${cmd.action}` });
     return;
   }
   try {
     const res = await chrome.tabs.sendMessage(e.tabId, { __bridge_cmd: cmd });
-    if (cmd.action === 'ping' && res && res.ok && res.data) res.data.eval_mode = evalMode();
+    if (cmd.action === 'ping' && res && res.ok && res.data) {
+      res.data.eval_mode = evalMode();
+      res.data.eval_reason = userScriptsDetail().why; // fallback 原因诊断：toggle-off / no-api / no-execute
+    }
     sendWS(e, {
-      type: 'result', id: cmd.id,
+      type: 'result', id: mid,
       ok: !!(res && res.ok),
       data: res ? res.data : null,
       error: res ? res.error : 'no response',
     });
   } catch (err) {
-    sendWS(e, { type: 'result', id: cmd.id, ok: false,
+    sendWS(e, { type: 'result', id: mid, ok: false,
                 error: `content script unreachable (tab=${e.tabId}): ${err.message || err}` });
   }
 }
@@ -570,17 +640,6 @@ const BACKGROUND_ACTIONS = {
 /* ============ 内容脚本消息 & 标签页事件 ============ */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.__bridge_eval) {
-    // USER_SCRIPT world 的 eval 结果回传
-    const pe = pendingEval.get(msg.__bridge_eval);
-    if (pe) {
-      clearTimeout(pe.timer);
-      pendingEval.delete(msg.__bridge_eval);
-      msg.ok ? pe.resolve(msg.data) : pe.reject(new Error(msg.error || 'eval failed'));
-    }
-    sendResponse({ ok: true });
-    return;
-  }
   if (msg && msg.type === 'tb:shot') {
     // 工具箱桥「整页截图」：单屏截取（页面侧负责滚动编排与拼接）；结果必须包在 data 字段（桥协议只透传 data）
     chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' })
@@ -675,7 +734,10 @@ chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
 
 chrome.tabs.onActivated.addListener(() => updateBadge());
 
-chrome.tabs.onRemoved.addListener((tabId) => dropEntry(tabId, 'tab removed'));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  dropEntry(tabId, 'tab removed');
+  chrome.storage.session.remove('mark:' + tabId).catch(() => {}); // tab 没了标记才清
+});
 
 reloadFilterCfg().then(() => log(`whitelist loaded: ${filterCfg.enabled === false ? 'disabled' : 'enabled'}, domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));
 log(`loaded, broker=ws://${CFG.host}:${CFG.port}`);

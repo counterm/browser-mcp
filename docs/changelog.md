@@ -2,6 +2,13 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · 文档：README 以 MCP 为主线重组，扩展安装措辞对齐 Chrome 实际按钮
+
+- README（中英同步）把 broker 明确定位为 **MCP 服务器**：简介与架构图改为「MCP 客户端（IDE / Agent / CLI）」视角，「MCP 接入」升为推荐接入章节并前移，stdio 自动拉起标为推荐方式，配置示例直接引用仓库根目录的 `.mcp.json`（本机生效）与 `.mcp.example.json`（可复制模板），补充 Trae / Claude Desktop 等客户端配置位置说明
+- 原「外部怎么接入」章节清理为「HTTP API（不走 MCP 的直接接入）」：定位为 MCP 工具的底层接口，端点表中 `/mcp`、`/sse` 两行并入 MCP 传输表，不再重复
+- 文件说明表补 `.mcp.json` / `.mcp.example.json` 两行；快速开始步骤 1 注明「只用 MCP stdio 时可跳过手动启动 broker」
+- 扩展安装措辞对齐 Chrome 实际按钮：统一为「**加载未打包的扩展程序**」（Load unpacked）并强调选择本仓库的 `chrome-extension` 目录，替换原「加载已解压的扩展程序」表述
+
 ## 2026-10-28 · 文档：扩展安装只保留「加载解压缩的扩展」
 
 - README（中英两份）删除 zip / `.crx` / Chrome Web Store 三种分发方式，改为「扩展安装与更新」：只支持 `chrome://extensions` 开启开发者模式后加载 `chrome-extension` 目录，并写明改代码后需「重新加载」扩展 + 刷新目标页面
@@ -22,6 +29,7 @@
 - **MCP `page_snapshot` 透传** `max` / `text_max` 参数，工具描述补充用法
 - **README 修正**（中英同步）：「允许用户脚本」开关**需重载扩展后生效**（SW 常驻时开关不会实时生效，原「约 5 秒自动生效」说法有误）；排错表补「页面响应超时（后台 tab 冻结，先 tab_activate）」与「element not found（重新 snapshot）」两条；命令表标注三选一定位
 - 版本号 0.1.15→0.1.16（manifest / 油猴 / README 首屏同步）；`node --check` 全部通过，`broker.py` py_compile 通过，`save_dataurl` 单测通过；扩展侧需重载扩展并刷新页面，broker 需重启后生效
+- **eval userScripts 结果通道改造（Chrome 实测修复）**：原实现依赖 `configureWorld({messaging:true})` + USER_SCRIPT world 内 `runtime.sendMessage` 回传，实测该链路不通且失败在 world 内是黑洞（只能干等 25s 超时后回落撞 CSP）。改为**共享 DOM 属性通道**：eval 结果写 `<html data-ba-eval-<id>>`（USER_SCRIPT world 与内容脚本共享 DOM），SW 轮询 content.js 新增的 `eval_result` 动作取回并清除，不再依赖 world messaging；`execute` 失败时直接报真实错误不再回落；ping 增加 `eval_reason` 诊断（`toggle-off`/`no-api`/`no-execute`），并在 eval 报 CSP 错误时按原因给出指引（Edge 无 userScripts API 会明确提示改用 Chrome——Edge 156 实测有开关 UI 但无 API）。另实测 **USER_SCRIPT world 默认继承页面 CSP**，eval 仍会被拦——`configureWorld` 补 `csp: "script-src 'self' 'unsafe-eval'"`（每次 execute 前确保已配置）后彻底打通
 
 ## 2026-10-28 · 工具箱中英双语 + README 英文镜像
 

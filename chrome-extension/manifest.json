@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Page Bridge",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "把浏览器页面广播给本地 broker (127.0.0.1:8766)，供任意 CLI/IDE 发现并接入控制",
   "minimum_chrome_version": "120",
   "permissions": ["tabs", "userScripts", "storage", "scripting", "webRequest"],
