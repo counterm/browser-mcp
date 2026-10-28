@@ -1,4 +1,4 @@
-# Browser Agent
+# Browser MCP
 
 **简体中文** ｜ [English](./README.en.md)
 
@@ -7,11 +7,11 @@
 IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器。
 页面纯文本化（无截图依赖的多模态），LLM 用元素编号定位，适合做浏览器自动化编排。
 
-当前版本：**v0.1.16**（`chrome-extension/manifest.json` 与 `page-bridge.user.js` 保持一致）
+当前版本：**v0.1.16**（以 `chrome-extension/manifest.json` 为准）
 
 ```
 ┌─ 浏览器（N 个标签页）──────────┐       ┌─ 本机 ───────────┐      ┌─ MCP 客户端（IDE / Agent / CLI）──┐
-│ 接入端（扩展 或 油猴脚本）      │ WS/   │ broker.py       │ MCP  │ ·list_pages / list_marks 发现   │
+│ 接入端（Chrome 扩展）          │ WS/   │ broker.py       │ MCP  │ ·list_pages / list_marks 发现   │
 │ ·自动加载，轻注入，零构建       │──────▶│ ·页面注册中心   │◀────▶│ ·page_snapshot 看页面           │
 │ ·hello 广播(url/title/caps)   │       │ ·上线/下线广播    │      │ ·page_call 操控页面              │
 │ ·snapshot/动作执行/eval       │◀──────│ ·命令转发/等结果 │─────▶│ ·page_logs 看页面异常           │
@@ -28,7 +28,7 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | `.mcp.json` | 本机生效的 MCP 接入配置（stdio 方式，MCP 客户端自动拉起 broker） |
 | `.mcp.example.json` | 可复制的 MCP 配置模板，把 `args` 里的路径改成你的 `broker.py` 绝对路径即可 |
 | `cli_client.py` | 外部 CLI 接入示例（纯标准库）：发现 → 校验 URL → 接入 → LLM 驱动循环 |
-| `chrome-extension/` | 接入端方案 A（推荐）：Chrome 扩展 MV3 |
+| `chrome-extension/` | 接入端（唯一方案）：Chrome 扩展 MV3 |
 | ├ `manifest.json` | 扩展清单：权限、注入规则（`<all_urls>`，排除 broker 自身端口）、action popup、options 页 |
 | ├ `background.js` | Service Worker：每个标签页维持一条到 broker 的 WebSocket；命令路由（DOM 动作转发给 content，截图/标签管理自己执行）；站点白名单过滤；webRequest 观察模式接口捕获（URL/请求头/请求体/响应头） |
 | ├ `filter.js` | 白名单核心：配置存储、eTLD+1 主域名提取、匹配引擎（SW/popup/options 共用） |
@@ -37,11 +37,8 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | ├ `capture-main.js` | 页面捕获层（`document_start` 注入 MAIN world）：包裹 fetch/XHR 抓请求体/响应体，与 bg 的 webRequest 头记录合并；同时 hook `console` / 未捕获异常 / 资源加载失败 / CSP，写入 `__BATB_LOG__` 供 `plog` 查询。接口部分供「接口调用」工具与 `netlog` 协议共用（见 `docs/spec-net-protocol.md`） |
 | ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` / `plog` 查询转给页面捕获层 |
 | └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
-| `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
+| `page-bridge.user.js` | 早期油猴脚本版，**已停止维护、仅作存档**；接入请一律使用 Chrome 扩展 |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
-
-> 扩展版与油猴版功能重叠，**不要同时装**，否则同一标签页会在 broker 里注册两条。
-> 扩展版更强：不受页面 CSP 限制、支持跨标签动作和截图。
 
 ## 快速开始
 
@@ -57,9 +54,7 @@ python broker.py
 
 > 只用 MCP 的 stdio 方式时可以跳过这步——MCP 客户端会把 broker 自动拉起（见下文「MCP 接入」）。
 
-### 2. 浏览器接入（二选一）
-
-**方案 A：Chrome 扩展（推荐）**
+### 2. 浏览器接入（Chrome 扩展）
 
 1. Chrome 打开 `chrome://extensions`
 2. 右上角开启「开发者模式」
@@ -67,12 +62,8 @@ python broker.py
 4. 打开任意网页，页面自动广播上线
 
 > 要操控本地 `file://` 页面，需在扩展详情页开启「允许访问文件网址」。
-
-**方案 B：油猴脚本**
-
-1. 安装 Tampermonkey 扩展
-2. Tampermonkey 面板 → 添加新脚本 → 粘贴 `page-bridge.user.js` 全部内容 → 保存
-3. 打开任意网页自动生效，无需其他操作
+>
+> eval 绕过页面 CSP 需在扩展详情页开启「**允许用户脚本**」（Chrome ≥ 135），见「eval 与 CSP」。
 
 ### 3. 验证
 
@@ -187,7 +178,7 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}
 | `hover` | `bid / selector / text` | 悬停 |
 | `nav` | `url` | 页面跳转 |
 | `back` / `reload` | - | 后退 / 刷新 |
-| `eval` | `code` | 页面内执行任意 JS（支持 async/await）。扩展版优先走 userScripts 通道绕过 CSP；油猴版/未开启开关时走内容脚本，受页面 CSP 约束。详见下方「eval 与 CSP」 |
+| `eval` | `code` | 页面内执行任意 JS（支持 async/await）。优先走 userScripts 通道绕过 CSP；未开启「允许用户脚本」开关时走内容脚本，受页面 CSP 约束。详见下方「eval 与 CSP」 |
 | `cookies` | `op?, name?, value?` | 读/写 cookie（op=get/set） |
 | `storage` | `area?, key, value?` | 读/写 localStorage / sessionStorage |
 | `upload` | `bid / selector / text, files:[{name,mime,content}]` | 给 `<input type=file>` 塞文件 |
@@ -265,14 +256,14 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 - broker 只绑定 `127.0.0.1`，局域网不可见；公网机器上请务必设置 `BRIDGE_TOKEN`
 - `eval` 等于把页面权限完全交给接入方，**只在自己可控的浏览器上启用**
 - `netlog` 查询默认脱敏 Cookie/Authorization/token 类字段；`redact:false` 会拿到真实凭据值，仅在可控环境按需使用（见 `docs/spec-net-protocol.md`）
-- 油猴版可用 `CFG.urlFilter`（正则白名单）限制只广播特定站点；扩展版用「站点过滤」配置黑白名单（见上文）
+- 用「站点过滤」配置黑白名单，限制只广播特定站点（见上文）
 - 请勿用于未授权的网站或他人会话
 
 ## 已知边界
 
 - 跨域 iframe 内部内容拿不到（同源策略，所有页面注入方案皆如此）
 - 浏览器下载、多窗口管理未覆盖（需 CDP）
-- 油猴版在强 CSP 页面会降级长轮询，延迟略高；扩展版无此问题
+- 强 CSP 页面下未开启「允许用户脚本」时，`eval` 会失败（其余 DOM 动作不受影响）
 - 启用 Trusted Types 且无 default policy 的页面（部分 Google 站点）上，工具箱 UI 可能挂载失败（innerHTML 被拦截）
 
 ## 故障排查
@@ -281,8 +272,7 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 |---|---|
 | `/pages` 始终为空 | broker 没跑起来？扩展装了但没开过普通网页？**总开关被关了？**（点工具栏图标看「接入启用」）扩展详情页看 Service Worker 报错 |
 | 页面在列表里但命令超时 | 标签页被浏览器休眠了，切换过去激活即可；或页面关闭前有未完成命令 |
-| 油猴版某些页面连不上 | 看控制台 `[bridge]` 日志，若显示"降级为 HTTP 长轮询"即 CSP 拦截，属正常；或改用扩展版 |
-| `file://` 页面不上线 | 扩展详情开启「允许访问文件网址」；油猴需在设置里允许访问文件 |
+| `file://` 页面不上线 | 扩展详情开启「允许访问文件网址」 |
 | 页面右下角没出现工具箱 FAB | 页面是否在白名单（popup 查看命中）；扩展详情页看 Service Worker 报错；`file://` 需「允许访问文件网址」 |
 | 工具箱「整页截图」报扩展桥无响应 | 扩展刚更新过、页面里的 content.js 还是旧版（没有桥），刷新页面即可；或扩展详情页看 Service Worker 报错 |
 | 工具箱 FAB 出现过又自行消失 | 站点把整个文档重写了（`document.open()/write()/close()`，如 Playcode 预览运行时；或 `createRoot(document.body)` 清空 body），宿主节点被一并移除。core.js 会在 1s 内自动挂回，界面状态与白名单显隐保留；若始终不回，刷新页面并看 `localStorage["ba:diaglog"]` 里的 `mount` 记录 |

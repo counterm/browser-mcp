@@ -1,4 +1,4 @@
-# Browser Agent
+# Browser MCP
 
 [简体中文](./README.md) ｜ **English**
 
@@ -6,12 +6,12 @@ A lightweight system that exposes browser pages to any CLI / IDE / Agent over a 
 **`broker.py` is itself an MCP server** (stdio / Streamable HTTP / SSE): IDEs and agents control the browser by configuring the broker as a regular MCP server.
 Pages are turned into text (no screenshot-dependent multimodality); the LLM locates elements by their numeric IDs, which suits browser automation orchestration.
 
-Current version: **v0.1.16** (kept in sync between `chrome-extension/manifest.json` and `page-bridge.user.js`)
+Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 
 ```
             Browser (N tabs)                   Local machine                MCP client (IDE / Agent / CLI)
 ┌──────────────────────────┐         ┌────────────────────────┐        ┌─────────────────────────────┐
-│ extension / userscript   │         │ broker.py              │  MCP   │ ·list_pages / list_marks    │
+│ Chrome extension          │         │ broker.py              │  MCP   │ ·list_pages / list_marks    │
 │ · hello broadcast        │  WS/   │ · page registry        │◀──────▶│ ·page_snapshot  view        │
 │ · snapshot / actions     │────────▶│ · forward + await      │        │ ·page_call      control     │
 │ · eval                   │◀────────│ · up/down broadcast    │───────▶│ ·page_logs      page errors │
@@ -37,11 +37,8 @@ Current version: **v0.1.16** (kept in sync between `chrome-extension/manifest.js
 | ├ `capture-main.js` | Page capture layer (injected into MAIN world at `document_start`): wraps fetch/XHR to capture request/response bodies and merges them with header records from the bg webRequest layer; also hooks `console` / uncaught exceptions / failed resource loads / CSP and writes to `__BATB_LOG__` for `plog` queries. The API part is shared by the "API Calls" tool and the `netlog` protocol (see `docs/spec-net-protocol.md`) |
 | ├ `content.js` | Content script: one instance per tab, responsible for DOM snapshots and action execution (click/type/eval, etc.); also relays extension-bridge messages for the in-page toolbox (`batb:bridge` → background) and forwards LLM `netlog` / `plog` queries to the page capture layer |
 | └ `toolbox/` | In-page toolbox (production build of the design prototype in `docs/toolbox/`): 14 zero-build modules injected into the page MAIN world by background according to the allowlist; six categories, 36 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture) |
-| `page-bridge.user.js` | Connector option B: userscript version. Mutually exclusive with the extension; falls back to GM long-polling when blocked by page CSP |
+| `page-bridge.user.js` | Legacy userscript version, **unmaintained, kept for archive only**; always use the Chrome extension for connecting |
 | `docs/research/1.md` | Early research notes (how console injection works and where it hurts) |
-
-> The extension and the userscript overlap in functionality — **do not install both**, or a single tab will register twice in the broker.
-> The extension is stronger: not subject to page CSP, cross-tab actions, and screenshots.
 
 ### Quick start
 
@@ -57,9 +54,7 @@ python broker.py
 
 > You can skip this step if you only use the MCP stdio transport — the MCP client launches the broker automatically (see "MCP" below).
 
-#### 2. Connect a browser (pick one)
-
-**Option A: Chrome extension (recommended)**
+#### 2. Connect a browser (Chrome extension)
 
 1. Open `chrome://extensions` in Chrome
 2. Enable "Developer mode" in the top-right corner
@@ -67,12 +62,8 @@ python broker.py
 4. Open any web page; it broadcasts itself online automatically
 
 > To drive local `file://` pages, enable "Allow access to file URLs" on the extension's details page.
-
-**Option B: Userscript**
-
-1. Install the Tampermonkey extension
-2. Tampermonkey dashboard → Add a new script → paste the whole `page-bridge.user.js` → Save
-3. Open any web page; it works automatically with no further steps
+>
+> Bypassing page CSP for `eval` requires enabling "**Allow user scripts**" (Chrome ≥ 135) on the extension's details page — see "eval and CSP".
 
 #### 3. Verify
 
@@ -187,7 +178,7 @@ Locate an element by one of three params: `bid` = element number from a snapshot
 | `hover` | `bid / selector / text` | Hover |
 | `nav` | `url` | Navigate the page |
 | `back` / `reload` | - | Back / reload |
-| `eval` | `code` | Execute arbitrary JS in the page (async/await supported). The extension prefers the userScripts channel to bypass CSP; the userscript version or a disabled toggle goes through the content script and is bound by page CSP. See "eval and CSP" below |
+| `eval` | `code` | Execute arbitrary JS in the page (async/await supported). Prefers the userScripts channel to bypass CSP; without the "Allow user scripts" toggle it goes through the content script and is bound by page CSP. See "eval and CSP" below |
 | `cookies` | `op?, name?, value?` | Read/write cookies (op=get/set) |
 | `storage` | `area?, key, value?` | Read/write localStorage / sessionStorage |
 | `upload` | `bid / selector / text, files:[{name,mime,content}]` | Feed files into an `<input type=file>` |
@@ -265,14 +256,14 @@ Enable it only in a browser you control; never enable it when connecting an untr
 - The broker binds only to `127.0.0.1` and is invisible on the LAN; always set `BRIDGE_TOKEN` on a public-facing machine
 - `eval` hands full page privileges to the caller — **enable it only in a browser you control**
 - `netlog` masks Cookie/Authorization/token-like fields by default; `redact:false` returns real credential values, use it only on demand in a controlled environment (see `docs/spec-net-protocol.md`)
-- The userscript version can restrict broadcasting to specific sites with `CFG.urlFilter` (regex allowlist); the extension version uses the "site filter" config allow/deny list (see above)
+- Use the "site filter" config allow/deny list to restrict broadcasting to specific sites (see above)
 - Do not use it on unauthorized websites or on someone else's session
 
 ### Known limitations
 
 - Content inside cross-origin iframes is unreachable (same-origin policy; true of every page-injection approach)
 - Browser downloads and multi-window management are not covered (requires CDP)
-- The userscript version falls back to long-polling on strict-CSP pages, with slightly higher latency; the extension version has no such issue
+- Without the "Allow user scripts" toggle, `eval` fails on strict-CSP pages (other DOM actions are unaffected)
 - On pages with Trusted Types enabled and no default policy (some Google sites), the toolbox UI may fail to mount (innerHTML is blocked)
 
 ### Troubleshooting
@@ -281,8 +272,7 @@ Enable it only in a browser you control; never enable it when connecting an untr
 |---|---|
 | `/pages` is always empty | Is the broker running? Extension installed but no regular web page opened yet? **Is the master switch off?** (click the toolbar icon and check "Connection enabled") Check the Service Worker errors on the extension details page |
 | The page is listed but commands time out | The tab was discarded/suspended by the browser — switch to it to wake it up; or a command was left unfinished before the page closed |
-| The userscript cannot connect on some pages | Check the `[bridge]` logs in the console; if it says "falling back to HTTP long-polling" it was blocked by CSP, which is expected; or switch to the extension |
-| `file://` pages do not come online | Enable "Allow access to file URLs" on the extension details page; for the userscript, allow file access in its settings |
+| `file://` pages do not come online | Enable "Allow access to file URLs" on the extension details page |
 | No toolbox FAB at the bottom-right of the page | Is the page allowlisted (check the popup for a match)? Check Service Worker errors on the extension details page; `file://` requires "Allow access to file URLs" |
 | The toolbox "Full-page Screenshot" says the extension bridge is not responding | The extension was just updated and the page still runs an old content.js (without the bridge) — refresh the page; or check Service Worker errors on the extension details page |
 | The toolbox FAB appears and then disappears on its own | The site rewrote the whole document (`document.open()/write()/close()`, e.g. Playcode preview runtime; or `createRoot(document.body)` wiping the body), removing the host node along with it. core.js remounts it within 1s, preserving UI state and allowlist visibility; if it never comes back, refresh the page and check the `mount` entries in `localStorage["ba:diaglog"]` |
