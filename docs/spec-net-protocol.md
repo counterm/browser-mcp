@@ -22,6 +22,8 @@ MV3 下 webRequest 观察模式拿不到响应体（MV2 起即如此），而页
 | **background（网络层）** | webRequest 观察模式 5 监听器：`onBeforeRequest`(+`requestBody`) / `onSendHeaders`(+`requestHeaders,extraHeaders`) / `onHeadersReceived`(+`responseHeaders,extraHeaders`) / `onCompleted` / `onErrorOccurred`（定稿） | URL、method、**全量请求头（含 Cookie/Authorization，必须 `extraHeaders`，否则 Chrome 72+ 隐去）**、请求体（formData/raw）、响应头、状态码、耗时 |
 | **页面 MAIN world** | `capture-main.js` 于 `document_start` 注入（manifest 静态声明 `world:"MAIN"`），包裹 fetch/XHR | 请求头（JS 设置的）、**请求体原文**、**响应体**（`clone()` 旁路流式读取，超限 cancel，不拖慢页面） |
 
+**采集范围**：bg 侧只收 `webRequest.type` ∈ `{xmlhttprequest, other, websocket, ping}`（即 fetch/XHR、beacon、WebSocket 握手）；`image` / `stylesheet` / `script` / `font` / `media` 等静态资源不进清单（否则图片地址会混进「接口调用」）。旧版本遗留的静态资源「仅头」记录，在 `sync()` 里按 URL 后缀 + 无请求体判定后丢弃。
+
 **合并规则**（`capture-main.js` 的 `sync()`，consume-once）：
 
 - method 相同 + URL 归一化相等（`decodeURI`，含 query）+ 时间差最小且 ≤ 8s → 并入，`src='merged'`

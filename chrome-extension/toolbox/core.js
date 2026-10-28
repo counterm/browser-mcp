@@ -70,11 +70,52 @@ B.HOST_ID = 'ba-toolbox-host';
 var host = document.createElement('div');
 host.id = B.HOST_ID;
 host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;display:block;';
-document.body.appendChild(host);
 B.host = host;
 var shadow = B.shadow = host.attachShadow({mode:'open'});
 B.u.sq = function(s){ return shadow.querySelector(s); };
 B.u.sqa = function(s){ return Array.prototype.slice.call(shadow.querySelectorAll(s)); };
+
+/* ---------- 宿主挂载 + 自愈 ----------
+   少数站点会整块换掉文档：document.open()/write()/close() 重写（如 Playcode 预览运行时每次
+   推送内容都重写一遍）、或 React createRoot(document.body) 清空 body。前者除摘掉宿主外，还会
+   按规范清空 document 及其（shadow 包含）后代与 window 上的**全部事件监听**——节点对象、
+   Shadow DOM、样式与定时器都还在，只有监听没了，表现为「FAB 还在但点了没反应」。
+   监听失效后没法靠事件自救，故用一个 1s 轮询兜底（定时器不受重写影响）：
+   ① 宿主脱离文档 → 挂回当前 body（节点/Shadow 复用，面板开合状态与门控 display 原样保留）；
+   ② 用一次自定义事件的同步往返自检监听是否还在 → 不在就重绑本模块监听并调 B.rebind()（boot.js 暴露）。 */
+var healTimer = null, mounted = false, probeBack = false;
+function onProbe(){ probeBack = true; }
+function bindCore(){
+  window.addEventListener('batb:probe', onProbe);
+  window.addEventListener('batb:gate', onGate);
+  window.addEventListener('load', mount);
+  window.addEventListener('pageshow', mount);
+  window.addEventListener('readystatechange', mount);
+}
+function mount(){
+  if(!window.BATB) window.BATB = B; // 站点可能删掉注入后才加的 window 键，恢复免被扩展探测误判为未注入而重复注入
+  if(!host.isConnected){
+    var other = document.getElementById(B.HOST_ID);
+    if(other && other !== host){ host.remove(); stopHeal(); return; } // 扩展重新注入了新实例，本实例让位
+    var parent = document.body || document.documentElement;
+    if(parent){
+      parent.appendChild(host);
+      if(mounted && B.dlog) B.dlog('mount', '宿主脱离文档，已重新挂载');
+      mounted = true;
+    }
+  }
+  probeBack = false;
+  try{ window.dispatchEvent(new Event('batb:probe')); }catch(e){}
+  if(!probeBack){ // 文档被重写：监听已清空 → 重绑（重绑前监听确实不存在，不会重复绑定）
+    bindCore();
+    if(B.rebind) B.rebind();
+    if(mounted && B.dlog) B.dlog('rebind', '监听被文档重写清空，已重新绑定');
+  }
+}
+function stopHeal(){ if(healTimer){ clearInterval(healTimer); healTimer = null; } }
+bindCore();
+mount();
+healTimer = setInterval(mount, 1000);
 
 /* ---------- Shadow 样式 ---------- */
 var WCSS = `
@@ -226,10 +267,11 @@ B.register = function(feats){
   });
 };
 
-/* ---------- 白名单门控：background 经 executeScript 派发 batb:gate（MAIN world 收不到扩展消息） ---------- */
-window.addEventListener('batb:gate', function(ev){
+/* ---------- 白名单门控：background 经 executeScript 派发 batb:gate（MAIN world 收不到扩展消息）
+   注册在 bindCore() 里，文档被重写清空监听后由 mount() 重新注册 ---------- */
+function onGate(ev){
   var allowed = !!(ev.detail && ev.detail.allowed);
   host.style.display = allowed ? 'block' : 'none';
   if(!allowed && B.ui && B.ui.closePanel) B.ui.closePanel();
-});
+}
 })();

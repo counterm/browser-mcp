@@ -68,11 +68,17 @@ function layoutPop(){
   undoPill.style.top = clamp(p.top - 40, 8, innerHeight - 40) + 'px';
   if(dpop.classList.contains('open')) layoutDpop();
 }
-/* 三级详情浮层：贴在二级 Popover 侧面（左侧优先，空间不足翻到右侧），顶边对齐 */
+/* 三级详情浮层：贴在二级 Popover 侧面（左侧优先，空间不足翻到右侧），顶边对齐；
+   宽度自适应：目标 664px（约列表宽的 2 倍），按左右可用空间收窄，最小保持 332px */
+var DPOP_W = 664, DPOP_MIN = 332;
 function layoutDpop(){
-  var p = pop.getBoundingClientRect(), w = dpop.offsetWidth, h = dpop.offsetHeight;
-  var left = p.left - w - 10, flip = left < 8;
-  if(flip) left = Math.min(p.right + 10, innerWidth - w - 8);
+  var p = pop.getBoundingClientRect(), gap = 10;
+  var spaceL = p.left - gap - 8, spaceR = innerWidth - p.right - gap - 8;
+  var w = clamp(Math.min(DPOP_W, Math.max(spaceL, spaceR)), DPOP_MIN, DPOP_W);
+  dpop.style.width = w + 'px';
+  var h = dpop.offsetHeight;
+  var left = p.left - w - gap, flip = left < 8;
+  if(flip) left = Math.min(p.right + gap, innerWidth - w - 8);
   dpop.style.left = clamp(left, 8, innerWidth - w - 8) + 'px';
   dpop.style.top = clamp(p.top, 8, innerHeight - h - 8) + 'px';
 }
@@ -180,13 +186,17 @@ function closeDetail(){
   dpop.classList.remove('open');
   state.feat = null;
 }
-sq('#dpop-x').onclick = closeDetail;
+/* ---------- 静态节点事件（可重跑：站点整块重写文档会清空全部监听，boot.js 的 bindUi 会调它） ---------- */
+function bindStatic(){
+  sq('#dpop-x').onclick = closeDetail;
+  sq('#undo-one').onclick = function(){ var op = state.undo.pop(); if(op) op.restore(); refreshUndo(); toast('已撤销一步'); };
+  sq('#undo-all').onclick = function(){ while(state.undo.length) state.undo.pop().restore(); refreshUndo(); toast('已全部恢复'); };
+}
+bindStatic();
 
 /* ---------- 撤销栈 ---------- */
 function pushUndo(op){ state.undo.push(op); refreshUndo(); }
 function refreshUndo(){ undoPill.classList.toggle('show', state.undo.length > 0); sq('#undo-n').textContent = state.undo.length; }
-sq('#undo-one').onclick = function(){ var op = state.undo.pop(); if(op) op.restore(); refreshUndo(); toast('已撤销一步'); };
-sq('#undo-all').onclick = function(){ while(state.undo.length) state.undo.pop().restore(); refreshUndo(); toast('已全部恢复'); };
 
 /* ---------- 关于原型 ---------- */
 function openAbout(){
@@ -199,8 +209,8 @@ function openAbout(){
   list.innerHTML =
     '<div class="d" style="padding:4px 6px">交互规格：<b>右下角圆形 FAB</b>（可拖拽、记忆位置、Alt+Shift+D 唤起）→ 点击展开<b>五分类面板</b>（仍锚定右下角）→ 悬停分类弹出 <b>Popover</b> 功能列表 → 点击功能查看结果。<br><br>' +
     '交付模型：<b>发给 LLM</b> 拆成两条通道 —— <b>复制</b>（结果进剪贴板，人工粘贴进对话）与 <b>存储</b>（写入 window / localStorage，LLM 经 broker 的 eval / storage 自取）；能跑起来的脚本 / 指令归入 <b>开发产物</b>。<br><br>' +
-    '真实实现（可在模拟页直接点）：拾取器、稳定性评分、文本搜索、表格提取、隐藏元素、移除 fixed、解除滚动锁、停用动画、解除输入限制、密码明文、恢复可选、描边、变更闪烁、精简 DOM、脱敏、存入上下文 / 选中元素、技术栈、环境、健康度、表单总览、接口清单、SDK 盘点、a11y。<br><br>' +
-    '演示数据（结果卡形态）：事件反查 / 组件名定位（模拟页已挂假 fiber，可真实走通）、Shadow DOM 穿透、操作录制、Playwright / 油猴 / 爬虫代码。<br><br>' +
+    '真实实现（可在模拟页直接点）：拾取器（含事件反查）、表格提取、隐藏元素、移除 fixed、解除滚动锁、停用动画、解除输入限制、密码明文、恢复可选、描边、变更闪烁、精简 DOM、脱敏、存入上下文 / 选中元素、技术栈、环境、健康度、表单总览、接口清单、SDK 盘点、a11y。<br><br>' +
+    '演示数据（结果卡形态）：组件名定位（模拟页已挂假 fiber，可真实走通）、Shadow DOM 穿透、操作录制、Playwright / 油猴 / 爬虫代码。<br><br>' +
     '落地到扩展时：白名单门控（非白名单页不挂载）、chrome.storage 记位置、结果动作经 background 转发 broker。</div>';
   layoutPop();
 }
@@ -213,6 +223,7 @@ B.ui = {
   hideForPick: hideForPick, showAfterPick: showAfterPick,
   openPop: openPop, closePop: closePop, scheduleClose: scheduleClose, cancelClose: function(){ clearTimeout(hoverTimer); }, renderList: renderList,
   openDetail: openDetail, closeDetail: closeDetail, clearDetail: clearDetail, openAbout: openAbout,
+  bindStatic: bindStatic,
   pushUndo: pushUndo, refreshUndo: refreshUndo,
   detailTimer: null /* 轮询类详情用：B.ui.detailTimer = setInterval(...)，clearDetail 会自动清 */
 };

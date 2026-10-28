@@ -20,12 +20,30 @@ const CONTENT_ACTIONS = [
 const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
 const CAPS = [...CONTENT_ACTIONS, ...EXTRA_ACTIONS];
 
-/** tabId -> {tabId,url,title,viewport,ws,pageId,fails,hb,retryTimer,closed} */
+/** tabId -> {tabId,url,title,viewport,ws,pageId,mark,fails,hb,retryTimer,closed} */
 const tabs = new Map();
 
 const log = (...a) => console.log('%c[bridge-sw]', 'color:#08f', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sendWS = (e, msg) => { if (e.ws && e.ws.readyState === 1) e.ws.send(JSON.stringify(msg)); };
+
+/* ============ 页桥标记（mark） ============
+ * 每个接入的网页在「标记」时由本扩展 JS 生成一个 id（pb_xxxxxxxxxx），存在 chrome.storage.session
+ * （按 tab 持久化，SW 休眠/重启不变；tab 关闭即清）。id 随 hello/hb 上报 broker，broker 侧保存
+ * id → url/title 映射，LLM 只凭 id 即可 GET /mark/<id> 找回网页。
+ */
+async function markFor(tabId) {
+  const key = 'mark:' + tabId;
+  try {
+    const got = await chrome.storage.session.get(key);
+    if (got && got[key]) return got[key];
+  } catch {}
+  const hex = [...crypto.getRandomValues(new Uint8Array(5))]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  const mid = 'pb_' + hex;
+  chrome.storage.session.set({ [key]: mid }).catch(() => {});
+  return mid;
+}
 
 /* ============ eval 能力探测（userScripts 通道，绕页面 CSP） ============
  * eval_mode:
@@ -227,6 +245,8 @@ async function handleFilterMessage(msg, sendResponse) {
 const NET_TAB_MAX = 150;      // 每 tab 环形上限（条）
 const NET_TAB_BYTES = 2e6;    // 每 tab 序列化体积上限（session 总配额 10MB，后台侧不存响应体）
 const NET_BODY_MAX = 16384;   // 请求体截断上限（字符）
+// 只记接口类请求；webRequest 的 type 里 image / stylesheet / script / font / media 等静态资源全部跳过
+const NET_TYPES = new Set(['xmlhttprequest', 'other', 'websocket', 'ping']);
 const netPend = new Map();    // requestId -> 半成品（onBeforeRequest 起，onCompleted/onErrorOccurred 定稿）
 const netBuf = new Map();     // tabId -> 待写数组（防抖 800ms 批量落盘）
 const netFlush = new Map();   // tabId -> 防抖 timer
@@ -257,6 +277,7 @@ const netTrim = (s) => {
 chrome.webRequest.onBeforeRequest.addListener((det) => {
   try {
     if (!/^https?:/i.test(det.url) || !netAllowed(det.tabId)) return;
+    if (!NET_TYPES.has(det.type)) return; // 图片 / CSS / JS / 字体等静态资源不是接口调用，不入库
     netPend.set(det.requestId, {
       rid: det.requestId, tabId: det.tabId, t: det.timeStamp,
       m: det.method, u: det.url, reqBody: netTrim(netReqBody(det.requestBody)),
@@ -392,7 +413,7 @@ function ensureEntry(tabId, info) {
   let e = tabs.get(tabId);
   if (!e) {
     e = { tabId, url: info.url, title: info.title, viewport: info.viewport || '',
-          ws: null, pageId: null, fails: 0, hb: null, retryTimer: null, closed: false };
+          ws: null, pageId: null, mark: '', fails: 0, hb: null, retryTimer: null, closed: false };
     tabs.set(tabId, e);
     connectWS(e);
   } else {
@@ -401,7 +422,7 @@ function ensureEntry(tabId, info) {
     e.viewport = info.viewport || e.viewport;
     const s = e.ws && e.ws.readyState;
     if (s === undefined || s === 2 || s === 3) connectWS(e);
-    else if (s === 1) sendWS(e, { type: 'hb', url: e.url, title: e.title, eval_mode: evalMode() });
+    else if (s === 1) sendWS(e, { type: 'hb', url: e.url, title: e.title, mid: e.mark, eval_mode: evalMode() });
   }
   return e;
 }
@@ -413,7 +434,7 @@ function dropEntry(tabId, reason) {
   clearInterval(e.hb);
   clearTimeout(e.retryTimer);
   try { e.ws && e.ws.close(); } catch {}
-  chrome.storage.session.remove('neth:' + tabId).catch(() => {}); // 接口捕获：tab 没了头记录一并清
+  chrome.storage.session.remove(['neth:' + tabId, 'mark:' + tabId]).catch(() => {}); // 接口捕获/页桥标记：tab 没了记录一并清
   tabs.delete(tabId);
   log(`tab${tabId} dropped: ${reason}`);
 }
@@ -428,15 +449,16 @@ function connectWS(e) {
   e.ws = sock;
   const kill = setTimeout(() => { if (sock.readyState !== 1) sock.close(); }, 4000);
 
-  sock.onopen = () => {
+  sock.onopen = async () => {
     clearTimeout(kill);
     e.fails = 0;
-    const hello = { type: 'hello', url: e.url, title: e.title, caps: CAPS, eval_mode: evalMode() };
+    e.mark = await markFor(e.tabId); // 标记 id 在接入时生成/取回，随 hello 交给 broker 存档
+    const hello = { type: 'hello', url: e.url, title: e.title, mid: e.mark, caps: CAPS, eval_mode: evalMode() };
     if (e.viewport) hello.viewport = e.viewport;
     sock.send(JSON.stringify(hello));
     clearInterval(e.hb);
-    e.hb = setInterval(() => sendWS(e, { type: 'hb', url: e.url, title: e.title, eval_mode: evalMode() }), CFG.hbMs);
-    log(`tab${e.tabId} WS connected: ${e.url}`);
+    e.hb = setInterval(() => sendWS(e, { type: 'hb', url: e.url, title: e.title, mid: e.mark, eval_mode: evalMode() }), CFG.hbMs);
+    log(`tab${e.tabId} WS connected: ${e.url} [${e.mark}]`);
   };
   sock.onmessage = (ev) => {
     let msg;
@@ -578,6 +600,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.session.remove('neth:' + ctab)
       .then(() => sendResponse({ ok: true, data: 'ok' }))
       .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+  if (msg && msg.type === 'tb:pinfo') {
+    // 工具箱桥「页桥标记」：返回本 tab 的标记 id（接入时生成并已上报 broker）
+    const ptab = sender.tab && sender.tab.id;
+    const ent = ptab == null ? null : tabs.get(ptab);
+    Promise.resolve(ent == null ? '' : (ent.mark || markFor(ptab))).then((mid) => {
+      sendResponse({ ok: true, data: {
+        mark: mid || '',
+        pageId: (ent && ent.pageId) || null,
+        port: CFG.port,
+        url: (ent && ent.url) || '',
+        title: (ent && ent.title) || ''
+      } });
+    });
     return true;
   }
   if (typeof msg.type === 'string' && msg.type.startsWith('filter:')) {

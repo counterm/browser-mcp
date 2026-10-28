@@ -27,7 +27,7 @@
 | ├ `options.html` / `options.js` | 完整配置页：域名列表与正则规则的增删改查、导入导出、正则实时测试面板 |
 | ├ `capture-main.js` | 页面捕获层（`document_start` 注入 MAIN world）：包裹 fetch/XHR 抓请求体/响应体，与 bg 的 webRequest 头记录合并；供「接口调用」工具与 `netlog` 协议共用（见 `docs/spec-net-protocol.md`） |
 | ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等 18 种）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` 查询转给页面捕获层 |
-| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
+| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
 | `build/` | 打包产物与测试密钥：`make-test-key.mjs`（生成测试私钥）、`debug-extension.pem`、`chrome-extension.crx` |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
@@ -118,6 +118,9 @@ node build\make-test-key.mjs
 | `GET /pages` | 发现：在线页面列表（id / url / title / mode / ago / eval_mode） |
 | `GET /events` | 订阅广播（SSE）：`page_up` / `page_update` / `page_down` / `page_event` |
 | `POST /call/{pid}` | 接入并执行一条命令：body 为命令 JSON，`?timeout=30` 控制等待 |
+| `GET /marks` | 列出全部页桥标记：`mark` / `online` / `pid` / `url` / `title` |
+| `GET /mark/{mark}` | 按标记查网页：返回在线状态、`pid`、URL、标题（离线时给最后一次的 URL） |
+| `POST /mark/{mark}` | 按标记执行命令（body 同 `/call/{pid}`，如 `{"action":"snapshot"}`） |
 | `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合 IDE agent 常驻会话） |
 
 ```powershell
@@ -196,10 +199,10 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 
 - **注入**：页面命中白名单后，background 经 `chrome.scripting` 把 `chrome-extension/toolbox/` 下 14 个模块注入**页面主世界**（MAIN world）——React fiber 反查、fetch 拦截、`window.__BA_*` 都要在页面上下文才可见；注入不受页面 CSP 限制
 - **门控即时生效**：白名单配置变更后，已注入页面经 DOM 事件 `batb:gate` 同步显隐——移出白名单立即隐藏，重新命中自动恢复；未注入过的命中页面自动补注入
-- **入口**：右下角圆形 FAB（可拖拽、位置记忆、`Alt+Shift+D` 唤起），六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
+- **入口**：右下角圆形 FAB（可拖拽、位置记忆、`Alt+Shift+D` 唤起），六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
 - **采集**：「网址二维码」把当前网址纯本地生成二维码（扫码在手机打开，可下载 PNG / 复制链接，内嵌 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) MIT 裁剪版）；「整页截图」滚动逐屏截取、拼接为长图并自动下载 PNG；「容器截图」拾取任意元素——可滚动容器只截其内部完整滚动范围（自动向上定位滚动祖先、逐屏裁剪拼接），普通元素截取当前可见区域——两类截图均自动处理浮动元素（fixed 临时隐藏、sticky 临时取消吸附，完成后还原），避免每屏重复；「接口调用」双层捕获页面请求——页面捕获层（`capture-main.js`，document_start 包裹 fetch/XHR）抓请求体/响应体 + webRequest 观察模式抓全量请求头（含 Cookie/Authorization），按 URL+时间合并，列表点开详情可**复制调试文本 / 复制 cURL** 粘给 LLM（默认脱敏 Cookie/token 等鉴权字段，可手动关）；截图两项均经**扩展桥**（content.js 中继 `batb:bridge` → background `captureVisibleTab`）实现，需 content.js 与扩展版本一致（更新扩展后刷新页面）
 - **接口调用的 LLM 查看通道**：LLM 经 broker 发 `netlog` 命令自主查询捕获记录（`list` 摘要 → `get` 详情 / `curl` 回放，无需人工点击），协议与局限详见 `docs/spec-net-protocol.md`
-- **发给 LLM 的存储通道**：结果写 `localStorage["ba:ctx"]` / `["ba:el"]`，LLM 经 broker 的 `storage` 动作自取（`window.__BA_*` 仅页面主世界可见，跨进程读取请用 storage）
+- **发给 LLM 的存储通道**：结果写 `localStorage["ba:ctx"]` / `["ba:el"]`，LLM 经 broker 的 `storage` 动作自取（`window.__BA_*` 仅页面主世界可见，跨进程读取请用 storage）；「复制页桥标记」复制的是**网页 id**（扩展在页面接入时用 JS 生成、按 tab 存在 `chrome.storage.session`，随 hello/hb 上报），LLM 凭 `GET /mark/<id>` 即查回 URL 与在线状态、`POST /mark/<id> {"action":"snapshot"}` 取实时快照继续操作
 - 增删功能：改 `toolbox/feats/<分类>.js` 里 `B.register([...])` 数组即可；模块清单/加载顺序见原型地图
 
 ## eval 与 CSP（扩展版）
@@ -246,6 +249,8 @@ python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果
 | `file://` 页面不上线 | 扩展详情开启「允许访问文件网址」；油猴需在设置里允许访问文件 |
 | 页面右下角没出现工具箱 FAB | 页面是否在白名单（popup 查看命中）；扩展详情页看 Service Worker 报错；`file://` 需「允许访问文件网址」 |
 | 工具箱「整页截图」报扩展桥无响应 | 扩展刚更新过、页面里的 content.js 还是旧版（没有桥），刷新页面即可；或扩展详情页看 Service Worker 报错 |
+| 工具箱 FAB 出现过又自行消失 | 站点把整个文档重写了（`document.open()/write()/close()`，如 Playcode 预览运行时；或 `createRoot(document.body)` 清空 body），宿主节点被一并移除。core.js 会在 1s 内自动挂回，界面状态与白名单显隐保留；若始终不回，刷新页面并看 `localStorage["ba:diaglog"]` 里的 `mount` 记录 |
+| 工具箱 FAB 在，但点了没反应 / 面板打不开 | 同上场景的第二段：整块重写文档会连带清空 document（含 Shadow DOM）与 window 上的**全部事件监听**，节点与样式还在但监听没了。core.js 每 1s 用自定义事件 `batb:probe` 自检监听，发现被清空即重绑（`ba:diaglog` 里会有 `rebind` 记录）；若仍无反应，刷新页面并把 `copy(localStorage.getItem('ba:diaglog'))` 的内容反馈 |
 | 工具箱「接口调用」提示捕获层未加载 / `netlog` 超时 | 扩展刚更新过：重载扩展 + 刷新页面（页面捕获层 `capture-main.js` 随页面加载注入）；检查页面是否在白名单（bg 只记录白名单页的请求） |
 | `eval` 报 CSP / unsafe-eval 错误 | 属正常（页面 CSP 限制）。按「eval 与 CSP」章节开启扩展的「允许用户脚本」开关；或改用其他 DOM 动作 |
 | `/pages` 里 `eval_mode` 一直是 `fallback` | userScripts 需要 Chrome ≥ 135 且手动开启「允许用户脚本」开关；`chrome://extensions` → Page Bridge → 详情里找 |

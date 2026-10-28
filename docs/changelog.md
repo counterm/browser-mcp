@@ -2,6 +2,82 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · 接口调用去掉静态资源；三级详情弹窗加宽到两倍
+
+- **问题**：「接口调用」列表里混进图片地址——bg 侧 webRequest 把所有 http(s) 请求都记成「仅头」记录，`image` / `css` / `js` / `font` 等静态资源也在内
+- **修复**：`background.js` 的 `onBeforeRequest` 增加 `webRequest.type` 白名单 `{xmlhttprequest, other, websocket, ping}`（fetch/XHR、beacon、WebSocket 握手），静态资源不再入库；`capture-main.js` 的 `sync()` 对旧版本遗留的静态资源「仅头」记录（URL 为图片/CSS/JS/字体等后缀且无请求体）直接丢弃
+- **弹窗加宽**：`ui.js` 的三级详情浮层宽度从固定 332px 改为自适应——目标 664px（列表宽两倍），按左右可用空间 `clamp(332, 664)` 收窄，仍保持「先左后右、顶边对齐、不重叠」的并排逻辑；列表不变
+- **地址不被截断**：详情里请求/响应头的行原本继承 `.li .u` 的 `nowrap + ellipsis`，改为 `white-space:normal` 换行显示；URL 继续 `word-break:break-all`
+- `docs/spec-net-protocol.md` 补充采集范围说明；`node --check` 通过（background.js / capture-main.js / ui.js / capture.js）；原型与扩展的 `ui.js` 同步，实测 1440px 视口下详情宽 664px、与列表间隔 10px、顶边对齐；929px 视口自适应收窄到可用宽度
+
+## 2026-10-28 · 表单保存与填充：新增「复制 / 粘贴」导入导出
+
+- 「复制」把当前站点已保存的表单导出成 JSON（`{_v, host, ts, fields}`）写入剪贴板；写入失败时弹框给出手动复制内容
+- 「粘贴」读取剪贴板 JSON 后**直接填进当前页面**，与「填充已保存」等价：复用同一套匹配逻辑（先按选择器，页面结构变化时按顺序兜底），跨站点也能用，可撤销
+- 导入兼容三种形态：本站导出结果、`localStorage["ba:formkit"]` 全量备份（优先取当前站点键）、纯字段数组；剪贴板读取被拒 / 不可用时退化为 `prompt` 手动粘贴
+- 回填逻辑抽成 `applyFields()`，「填充已保存」与「粘贴」共用
+- `chrome-extension/toolbox/feats/build.js` 与原型 `docs/toolbox/feats/build.js` 同步（顺带补齐原型缺失的 `btn` / `toast` / `$$` / `copyText` 引用），两文件 `node --check` 通过；`docs/toolbox-proto-map.md` 的 formkit 描述同步
+
+## 2026-10-27 · 页桥标记重构：id 由扩展接入时生成，broker 存档 id → 网址
+
+- 标记不再由「pid + broker 地址」拼字符串，而是每个网页一枚**网页 id**：`background.js` 在 tab 接入时用 JS 生成
+  `pb_xxxxxxxxxx`，存 `chrome.storage.session`（按 tab 持久，SW 休眠 / 刷新不变，关 tab 即清），随 `hello` / `hb` 上报 broker
+- broker 新增 `MARKS` 存档（id → url/title/在线状态）：`GET /marks` 列出全部、`GET /mark/{id}` 按 id 查网页、
+  `POST /mark/{id}` 按 id 下发命令（等同 `/call/{pid}`）；页面离线时仍返回最后一次 URL，离线记录保留 24h
+- 工具箱「复制页桥标记」改为**只复制 id**，并显示 id、标题、URL 与查询方式；`tb:pinfo` 返回值加入 `mark`
+- 同步：长轮询注册 / 心跳透传 `mid`，README 接口表、`docs/toolbox-proto-map.md`、changelog 更新；`node --check` 与 `py_compile` 通过
+
+## 2026-10-26 · 新增「复制页桥标记」：一枚标记让 LLM 自取指定页面
+
+- 「发给 LLM」分类新增 `marker`（存入 / store 子组）：读取本 tab 在 broker 的 `pid`，生成可粘贴的标记
+  `【页桥标记】PB::<pid>::<broker>`，附带页面 URL / 标题与查询方式；点「复制标记」即入剪贴板
+- LLM 侧无需再让用户描述页面：`GET /pages` 确认 pid 在线 → `POST /call/<pid> {"action":"snapshot"}` 取实时快照（元素带 `bid`，可继续 `click` / `type`），与 `cli_client.py` 的 snapshot→decide→call 循环一致
+- background 新增扩展桥动作 `tb:pinfo`（返回本 tab 的 `pageId` / `port` / `url` / `title`）；工具箱在 MAIN world 经 `batb:bridge` 取用。未接入 broker（扩展未连接 / 不在白名单 / 原型 `file://` 页）时降级为仅含 URL 的标记并说明原因
+- 计数：扩展 35 → 36 项、原型 31 → 32 项；README 与 `docs/toolbox-proto-map.md` 的 llm 表格同步；原型 / 扩展 `feats/llm.js` 同步，`node --check` 通过
+
+## 2026-10-26 · 元素拾取器：点击二级条目即进入拾取，省掉一次点按
+
+- 在二层功能列表点击「元素拾取器」后，直接进入拾取模式（工具箱自动收起 → 移动高亮 → 点击锁定 → 结果回填到详情区），不再需要先等三级详情出现、再点「开始拾取」
+- 三级详情里的按钮改为「重新拾取」，用于连续拾取多个元素（每次拾取前清空上一次结果）
+- 拾取模式仍支持 Esc 取消；取消后详情区保留说明与「重新拾取」入口
+- `chrome-extension/toolbox/feats/find.js` 与原型 `docs/toolbox/feats/find.js` 同步，`node --check` 通过
+
+## 2026-10-26 · 修复拾取器事件反查：向上回溯祖先节点，支持 iframe 场景提示
+
+- **现象**：在 Playcode React 预览页拾取按钮后，「事件处理」区为空
+- **根因 1**：拾取常落在按钮内部的 `span` / `svg` / 图标上，而 React 只在真正写 JSX 的宿主节点上挂 `__reactProps$` + `onXxx`，子节点的 props 通常只有 `className/children`；旧实现只看拾取节点本身。真实 React 页面（react.dev）实测复现：按钮内 `span` 无 handler，祖先 `button` 上才有 `onClick`
+- **修复**：从拾取节点向上逐级回溯（最多 10 层，经 `getRootNode().host` 穿透 Shadow DOM），取最近一个挂 `onXxx` 的 React / Vue 节点；结果标题标注 handler 所在的祖先节点（如「在祖先 button 上」），复制内容仍为 handler 源码
+- **根因 2（Playcode 编辑器场景）**：若工具箱所在页面只是编辑器外壳、React 应用跑在 iframe 里，`elementFromPoint` 命中的是 `iframe` 本身，任何 DOM 都拿不到 handler
+- **修复**：拾取结果为 `IFRAME` 时给出明确提示——用预览工具栏的「在新窗口打开预览」打开独立页面后再用工具箱（扩展目前只注入顶层 frame）
+- 未找到时的文案补充「事件由 `addEventListener` 绑定时无法从 DOM 直接读出源码」；`chrome-extension/toolbox/feats/find.js` 与原型 `docs/toolbox/feats/find.js` 同步，两文件 `node --check` 通过
+
+## 2026-10-26 · 查找分类精简：「事件反查」并入元素拾取器，移除评分与文本搜索
+
+- 移除 `selrank`（Selector 稳定性评分）与 `textsearch`（按文本 / 属性搜索）两项功能：评分与实际使用脱节、全文搜索与浏览器自带查找重复
+- `eventlook`（事件反查）并入「元素拾取器」：拾取锁定后，路径结果下方直接显示 **事件处理** 区——React 节点上 `__reactProps$` 的全部 `onXxx` handler 源码，或 Vue 组件实例 `vnode.props` 上的 `onXxx`；带代码框自带的复制按钮，未找到时给出拾取建议。独立入口删除（原先依赖 `ensurePicked()`，容易直接复用上一次拾取的元素，看起来像「没实现」）
+- 查找分类 9 项 → 6 项；原型 / 扩展实际注册数校正为 **31 / 35 项**（README、`docs/toolbox-proto-map.md` 同步；原文档 33/37 已少计 1 项）
+- `chrome-extension/toolbox/feats/find.js` 与原型 `docs/toolbox/feats/find.js` 同步；`feats/build.js` 中指向旧评分工具的提示文案、原型关于页的功能清单同步更新
+
+## 2026-10-26 · 元素拾取器：Puppeteer 右侧新增复制图标按钮
+
+- 拾取出结果后，四个写法标签（CSS / XPath / Playwright / Puppeteer）行尾追加一个「复制路径」图标按钮，点击复制**当前选中标签**的路径到剪贴板并 toast 提示「已复制路径」
+- 复制内容取自下方代码框的实时文本，切换标签后再复制即为该标签的写法；复制按钮不带激活态，不影响标签选中逻辑
+- `chrome-extension/toolbox/feats/find.js` 与原型 `docs/toolbox/feats/find.js` 同步；两文件 `node --check` 通过
+
+## 2026-10-26 · 修复工具箱宿主被页面「整块重写文档」抹掉后不再出现
+
+- **现象**：在 Playcode 预览页（`react-template.preview.playcode.io`）工具箱 FAB 短暂出现后消失，且不再回来
+- **根因**：该站点的预览运行时在每次推送内容时执行 `document.open()` → `document.write(html)` → `document.close()` 重写整个文档（`__update__`），宿主 `#ba-toolbox-host` 随旧文档一起被移除；`resetObjectAfterInitialKeys('window', window)` 还会删掉注入后才加的 `window.BATB`。而扩展只在「导航完成 / SPA 路由变化 / 白名单变更」时注入——`document.open()` 既不是导航也不改 URL，所以工具箱不会自己回来；`batb:gate` 门控此时也只是给脱离文档的节点设 `display`，无任何效果
+- **修复**：`core.js` 把一次性 `document.body.appendChild(host)` 换成 `mount()` + `heal()`——文档事件（`load` / `pageshow` / `readystatechange`）加 1s 低频轮询兜底（重写后 window 上的监听不一定还在），发现 `host.isConnected === false` 就挂回当前 `document.body`（`body` 尚未生成时下一轮再试）；节点与 Shadow 复用，界面状态与门控显隐（节点上的 `display`）原样保留，`B.dlog` 记录 `mount: 宿主脱离文档，已重新挂载`。若扩展随后重新注入产生同 ID 的新实例，旧实例自动让位（`host.remove()` + `stopHeal()`），不会出现两个 FAB
+- 同类问题一并覆盖：`React createRoot(document.body)` 等清空/替换 body 的站点
+- 原型 `docs/toolbox/core.js` 同步；README 故障排查表、`docs/toolbox-proto-map.md` 模块一览与「改动热点速查」同步
+- **补丁（同日，同一站点暴露的第二段）**：宿主能挂回来了，但「FAB 在、点了没反应」
+  - **根因**：`document.open()/write()/close()` 除摘掉宿主外，还会按规范清空 document 及其（shadow 包含）后代**与 window** 上的全部事件监听；而我们的绑定（boot.js 的 FAB/分类/Popover/拖拽/热键/点空白收起、ui.js 挂在 `#dpop-x`/`#undo-one`/`#undo-all` 上的 onclick、core.js 的 `batb:gate`）都是加载时一次性绑定的。节点对象、Shadow DOM、样式、定时器、localStorage 都还在，只有监听没了 → 「看得见、点不动」
+  - **实测确认**（Chromium 真实浏览器）：重写后 `addEventListener` 与 `onclick` 一律静默失效（shadow 内节点同样失效）；`window` 上的监听一并失效；**document 对象身份不变**（`d0 === document`，无法用它判断重写）；定时器与 localStorage 存活
+  - **修复**：core.js 的 1s 轮询改为 `mount()`，在其中做「自定义事件同步往返自检」（`batb:probe`）——自检不通说明监听被清空，就重绑 core 自己的监听（`bindCore()`：probe / gate / load / pageshow / readystatechange）并调 `B.rebind()`；boot.js 把全部绑定收进 `bindUi()` 并导出 `B.rebind`（内部先调 `B.ui.bindStatic()`，ui.js 把三个静态 onclick 收进 `bindStatic()` 导出）。重绑前监听确实已不存在，故不会重复绑定（Esc 不会一次关两层）；`createRoot(document.body)` 式只摘节点不清监听的站点，自检通过 → 不重绑，不会出现双份监听
+  - `mount()` 顺带恢复被站点删掉的 `window.BATB`，避免扩展探测误判为「未注入」而重复注入
+  - 验证：真实浏览器加载 12 个原型模块 → `document.write` 重写 → FAB 单击即开面板、分类单击出 Popover，连点两次=开/关各一次（无重复绑定）；`document.body.innerHTML=''` 路径同样正常且不产生 rebind 记录；`node --check` 6 个改动文件通过
+
 ## 2026-10-26 · 修复元素拾取器：拾取期间收起工具箱界面，选中后恢复
 
 - **现象**：点「开始拾取」后 hover/点击页面元素，元素能正常锁定且结果已渲染，但面板、功能列表、详情浮层同时关闭，表现为「所有工具都消失」；且再次拾取时上一次结果会残留在详情区

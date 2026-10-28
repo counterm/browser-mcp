@@ -237,6 +237,7 @@
   }
 
   /* ---------- 合并：bg 头部记录（webRequest）→ 页面记录（consume-once，歧义不并） ---------- */
+  var STATIC_URL = /\.(?:png|jpe?g|gif|webp|svg|ico|bmp|avif|css|js|mjs|map|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|ogg)(?:[?#]|$)/i;
   var seenBg = {}; // bg requestId → 已消费
   function applyBg(rec, it){
     if (it.reqHdr && it.reqHdr.length) rec.reqHdr = it.reqHdr;   // bg 的请求头是全量（含浏览器自动加的 Cookie）
@@ -259,10 +260,13 @@
           if (dt <= 8000 && (!hit || dt < hit.dt)) hit = { r: r, dt: dt };
         }
         if (hit) { hit.r.src = 'merged'; applyBg(hit.r, it); }
-        else push({ id: ++N.seq, t: it.t || now(), src: 'net', kind: 'net', m: it.m, u: it.u,
-                    reqHdr: it.reqHdr || [], reqBody: it.reqBody || null,
-                    s: it.s, resHdr: it.resHdr || [], resBody: null, ms: it.ms,
-                    note: '仅网络层头部（响应体需页面经 fetch/XHR 发起才有）' });
+        /* 旧版本后台把图片 / CSS / JS 等静态资源也记成了「仅头」记录：无请求体且 URL 是静态资源后缀的丢弃 */
+        else if (!(STATIC_URL.test(it.u || '') && !it.reqBody)) {
+          push({ id: ++N.seq, t: it.t || now(), src: 'net', kind: 'net', m: it.m, u: it.u,
+                 reqHdr: it.reqHdr || [], reqBody: it.reqBody || null,
+                 s: it.s, resHdr: it.resHdr || [], resBody: null, ms: it.ms,
+                 note: '仅网络层头部（响应体需页面经 fetch/XHR 发起才有）' });
+        }
       });
       return N.recs;
     }).catch(function(){ return N.recs; }); // 扩展桥不可用（刚更新未刷新）时降级为纯页面记录

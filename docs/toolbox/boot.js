@@ -11,6 +11,9 @@ B.FEATS.forEach(function(f){ B.FEATS_BY_ID[f.id] = f; });
 B.countOf = function(cid){ return B.FEATS.filter(function(f){ return f.cat === cid && !f.adv; }).length; };
 sqa('.cat i').forEach(function(i){ i.textContent = B.countOf(i.dataset.c); });
 
+/* ---------- 事件绑定（可重跑：站点整块重写文档会清空全部监听，core.js 自检发现后调 B.rebind） ---------- */
+function bindUi(){
+if(B.ui && B.ui.bindStatic) B.ui.bindStatic(); /* ui.js 里挂在静态节点上的 onclick（重写后同样被清空） */
 /* ---------- 基础事件 ---------- */
 fab.addEventListener('click', function(){ if(!fab._moved) ui.togglePanel(); });
 fab.addEventListener('keydown', function(e){ if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); ui.togglePanel(); } });
@@ -63,12 +66,6 @@ pop.addEventListener('click', function(e){ e.stopPropagation(); });
   fab.addEventListener('pointerup', end);
   fab.addEventListener('pointercancel', end);
 })();
-(function(){ // 恢复位置
-  try{
-    var p = JSON.parse(localStorage.getItem('ba-tbx-pos') || 'null');
-    if(p){ fab.style.left = p.l; fab.style.right = p.r; fab.style.top = p.t; fab.style.bottom = 'auto'; }
-  }catch(e){}
-})();
 /* 视口尺寸变化（如 F12 停靠改变高度）时把 FAB 钳回视口内——记忆位置是绝对 top，视口变矮会被淹没 */
 function clampFab(){
   if(!fab.style.top) return; /* 默认 bottom:24px 定位随视口自适应，无需处理 */
@@ -98,4 +95,15 @@ document.addEventListener('pointerdown', function(e){
   if(B.host.contains(e.target)) return;
   ui.closePanel();
 }, true);
+}
+B.rebind = bindUi;
+
+/* 恢复位置：只做一次，须在 clampFab() 之前 */
+(function(){
+  try{
+    var p = JSON.parse(localStorage.getItem('ba-tbx-pos') || 'null');
+    if(p){ fab.style.left = p.l; fab.style.right = p.r; fab.style.top = p.t; fab.style.bottom = 'auto'; }
+  }catch(e){}
+})();
+bindUi();
 })(window.BATB);

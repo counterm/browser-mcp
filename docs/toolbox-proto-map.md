@@ -60,17 +60,17 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 
 | 模块 | 行数 | 职责 | 导出 |
 |---|---|---|---|
-| [core.js](toolbox/core.js) | ~205 | 命名空间、基础工具、图标、状态与 `#ba-toolbox-host` 挂载、Shadow 样式 `WCSS`、页面注入样式、功能注册器。**必须最先加载** | `B.u` `$/$$/el/esc/clamp/copyText/sq/sqa`、`B.I/B.ICONS`、`B.state`、`B.host/B.shadow`、`B.style` pageStyle+STYLE、`B.register` |
+| [core.js](toolbox/core.js) | ~242 | 命名空间、基础工具、图标、状态与 `#ba-toolbox-host` 挂载 + 宿主自愈（文档被整块重写后自动挂回）、Shadow 样式 `WCSS`、页面注入样式、功能注册器。**必须最先加载** | `B.u` `$/$$/el/esc/clamp/copyText/sq/sqa`、`B.I/B.ICONS`、`B.state`、`B.host/B.shadow`、`B.style` pageStyle+STYLE、`B.register` |
 | [cats.js](toolbox/cats.js) | ~15 | 分类定义：原型五分类（llm 带 copy/store 子组），扩展落地版另有 capture「采集」 | `B.CATS` |
 | [widgets.js](toolbox/widgets.js) | ~38 | 结果组件 + toast（自带 DOM） | `B.w` codeBox/kv/note/btn/badge/scoreBadge/toast |
-| [ui.js](toolbox/ui.js) | ~210 | FAB/面板/Popover/详情浮层（dpop）DOM、三层布局与联动、开合、列表渲染、详情生命周期、撤销栈、关于页 | `B.ui`（fab/panel/pop/dpop、layout*、open/close 系列、renderList、pushUndo、detailTimer…） |
+| [ui.js](toolbox/ui.js) | ~214 | FAB/面板/Popover/详情浮层（dpop）DOM、三层布局与联动、开合、列表渲染、详情生命周期、撤销栈、关于页；静态节点事件收在 `bindStatic()`（可重绑） | `B.ui`（fab/panel/pop/dpop、layout*、open/close 系列、renderList、pushUndo、bindStatic、detailTimer…） |
 | [picker.js](toolbox/picker.js) | ~94 | 选择器工具 + 元素拾取器 | `B.sel` cssPath/bestSelector/SCORE_RULES/scoreSelector/xpathOf、`B.pick`、`B.ensurePicked` |
 | [helpers.js](toolbox/helpers.js) | ~61 | fetch 拦截（接口清单数据源）+ 通用实现 | `B.NET`、`B.detectStack/B.REDACT/B.redact/B.skeleton/B.maxDepth/B.flashEl` |
-| [boot.js](toolbox/boot.js) | ~91 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起）。**必须最后加载** | — |
+| [boot.js](toolbox/boot.js) | ~109 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起），绑定收在 `bindUi()` 并导出 `B.rebind`（文档被重写清空监听后由 core.js 调用来重绑）。**必须最后加载** | `B.rebind` |
 | [qr.js](../chrome-extension/toolbox/qr.js) | ~250 | 〔仅扩展版〕二维码生成：qrcode-generator 1.4.4（MIT）裁剪，Byte 模式 UTF-8 + 自动版本，canvas 自绘矩阵 | `B.QR` / `B.QR.make(text)` |
 | [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~420 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图 / 容器截图（扩展桥逐屏 captureVisibleTab 拼接下载）/ 接口调用（读 `__BATB_NET__` + 扩展桥合并） | — |
 
-### 功能注册表 FEATS（原型 33 项，扩展落地版 37 项，按分类一文件）
+### 功能注册表 FEATS（原型 32 项，扩展落地版 36 项，按分类一文件）
 
 追加功能：打开对应分类文件，往 `B.register([...])` 数组插 `{id, cat, name, icon, star, desc, run}` 对象即可；llm 分类加 `grp:'copy'|'store'`，高级功能加 `adv:true`。
 
@@ -84,14 +84,11 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `net` | 接口清单（轮询写 `B.ui.detailTimer`，clearDetail 统一清理） | ★★★ |
 | `sdk` | 第三方 SDK 盘点 | ★ |
 
-**feats/find.js（查找，9 项，末 3 项高级）**
+**feats/find.js（查找，6 项，末 3 项高级）**
 
 | id | 功能 | 级 |
 |---|---|---|
-| `picker` | 元素拾取器（CSS/XPath/Playwright/Puppeteer 四标签） | ★★★ |
-| `selrank` | Selector 稳定性评分 | ★★★ |
-| `textsearch` | 按文本搜索（命中跳转 + 闪烁） | ★★★ |
-| `eventlook` | 事件反查（React `__reactProps$`） | ★★★ |
+| `picker` | 元素拾取器（CSS/XPath/Playwright/Puppeteer 四标签 + 复制路径 + React/Vue 事件 handler） | ★★★ |
 | `compname` | 组件名定位（fiber / Vue 实例） | ★★★ |
 | `tablex` | 表格提取（JSON/CSV，默认 `#orders`） | ★★ |
 | `globalsearch` | 全局数据搜索 | ★★ 高级 |
@@ -112,7 +109,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `outline` | 元素描边 | ★ |
 | `flash` | 变更闪烁（MutationObserver） | ★★ |
 
-**feats/llm.js（发给 LLM，6 项，copy / store 子组）**
+**feats/llm.js（发给 LLM，7 项，copy / store 子组）**
 
 | id | grp | 功能 | 级 |
 |---|---|---|---|
@@ -121,6 +118,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `elqa` | copy | 选中元素问答 | ★★★ |
 | `storectx` | store | 存入页面上下文（`__BA_CTX__` + `localStorage["ba:ctx"]`） | ★★★ |
 | `storeel` | store | 存入选中元素（`__BA_EL__`） | ★★ |
+| `marker` | store | 复制页桥标记（网页 id，扩展接入时用 JS 生成 → `chrome.storage.session` → broker `GET /mark/<id>`） | ★★★ |
 | `a11y` | copy | a11y 修复建议 | ★ 高级 |
 
 **feats/build.js（开发产物，5 项）**
@@ -131,7 +129,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `userscript` | 生成油猴脚本骨架 | ★★★ |
 | `crawler` | 爬虫代码生成（Python） | ★★ |
 | `record` | 操作录制 → 步骤（演示数据） | ★★ |
-| `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过） | ★★★ |
+| `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过；「复制」导出 JSON、「粘贴」按导出内容填充） | ★★★ |
 
 **feats/capture.js（采集，4 项）**〔仅扩展版，原型未含〕
 
@@ -166,4 +164,5 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | 位置记忆 / 拖拽 | boot.js；扩展版仍用 localStorage（按站点记忆） |
 | 撤销栈 | ui.js `pushUndo`/`refreshUndo` + 各功能的 `pushUndo` 调用 |
 | 白名单门控 | 演示：demo.js `d-wl`；扩展版：background.js `syncToolbox`（注入/隐藏）+ core.js 监听 `batb:gate` |
+| 宿主挂载 / 自愈（宿主被摘 + 监听被清空） | core.js `mount`/`bindCore`/`onProbe`（1s 轮询：宿主脱离文档即挂回；`batb:probe` 同步自检监听，被清空则重绑 core 并调 `B.rebind`）+ boot.js `bindUi`、ui.js `bindStatic` |
 | 防重复注入 | core.js 开头 `if(window.BATB) return`；扩展版各模块另有自身导出守卫 + `B.register` 按 id 去重 |

@@ -2,7 +2,7 @@
 (function(B){
 if(!B) return;
 var el = B.u.el, esc = B.u.esc, $$ = B.u.$$;
-var note = B.w.note, codeBox = B.w.codeBox, scoreBadge = B.w.scoreBadge, btn = B.w.btn, toast = B.w.toast;
+var note = B.w.note, codeBox = B.w.codeBox, scoreBadge = B.w.scoreBadge, btn = B.w.btn, toast = B.w.toast, copyText = B.u.copyText;
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
 var ensurePicked = B.ensurePicked;
 
@@ -80,7 +80,7 @@ B.register([
       b.appendChild(codeBox(pw));
       b.appendChild(note('检测到 ' + fw.join('/') + '：页面为客户端渲染，requests 拉到的 HTML 是空壳、抓不到表格数据。上面这份 Playwright 脚本会真正执行 JS 后再读 DOM，才能取到渲染后的内容。'));
     } else {
-      b.appendChild(note('选择器由页面表格自动推导；可按「Selector 稳定性评分」结果替换。适用于 SSR / 静态页。'));
+      b.appendChild(note('选择器由页面表格自动推导；可用「元素拾取器」的结果替换。适用于 SSR / 静态页。'));
     }
   }},
 { id:'record', cat:'build', name:'操作录制 → 步骤', icon:'clock', star:2, desc:'记录点击序列，导出可重放步骤', mock:true,
@@ -199,6 +199,46 @@ B.register([
     function undoable(prev){
       B.ui.pushUndo({ restore:function(){ prev.forEach(function(p){ try{ setVal(p[0], p[1]); }catch(x){} }); } });
     }
+    /* 「填充已保存」与「粘贴」共用同一套匹配逻辑：先按选择器，结构变了按顺序兜底 */
+    function applyFields(list, prefix){
+      var cur = fields(), prev = [], rows = [], miss = 0;
+      list.forEach(function(f, i){
+        var e = null;
+        if(f.s){ try{ var m = document.querySelector(f.s); if(m && kind(m) === f.t && cur.indexOf(m) > -1) e = m; }catch(x){} }
+        if(!e && cur[i] && kind(cur[i]) === f.t) e = cur[i]; /* 结构变化时按顺序兜底 */
+        if(!e){ miss++; return; }
+        if(e.tagName === 'SELECT'){
+          var hit = $$('option', e).filter(function(o){ return o.value === f.v || o.textContent.trim() === f.v; })[0];
+          if(!hit){ miss++; return; }
+        }
+        prev.push([e, e.value]);
+        setVal(e, e.tagName === 'SELECT' ? hit.value : f.v);
+        rows.push([kind(e), label(e), e.value]);
+      });
+      if(!rows.length){ toast('没找到匹配的表单字段（页面结构可能变了）'); return 0; }
+      undoable(prev);
+      showRows(prefix + rows.length + ' 个字段' + (miss ? ' · ' + miss + ' 个未匹配' : ''), rows);
+      return rows.length;
+    }
+    /* 导入：剪贴板 JSON 兼容三种形态（本站导出、全部站点备份、纯字段数组） */
+    function unpack(text){
+      var o = null;
+      try{ o = JSON.parse(String(text || '').trim()); }catch(x){ return null; }
+      if(Array.isArray(o)) return o;
+      if(o && Array.isArray(o.fields)) return o.fields;
+      if(o && o[HOST] && Array.isArray(o[HOST].fields)) return o[HOST].fields;
+      if(o){ var k = Object.keys(o)[0]; if(k && o[k] && Array.isArray(o[k].fields)) return o[k].fields; }
+      return null;
+    }
+    function readClip(){
+      if(navigator.clipboard && navigator.clipboard.readText)
+        return navigator.clipboard.readText().catch(manualPaste);
+      return manualPaste();
+    }
+    function manualPaste(){
+      var t = window.prompt('无法读取剪贴板，请把表单 JSON 粘贴到这里：', '');
+      return Promise.resolve(t || '');
+    }
 
     var row = el('div', 'row2');
     row.appendChild(btn('保存表单', function(){
@@ -221,24 +261,23 @@ B.register([
     row.appendChild(btn('填充已保存', function(){
       var rec = load()[HOST];
       if(!rec || !rec.fields || !rec.fields.length){ toast('当前站点还没有保存的表单，先「保存表单」'); return; }
-      var cur = fields(), prev = [], rows = [], miss = 0;
-      rec.fields.forEach(function(f, i){
-        var e = null;
-        if(f.s){ try{ var m = document.querySelector(f.s); if(m && kind(m) === f.t && cur.indexOf(m) > -1) e = m; }catch(x){} }
-        if(!e && cur[i] && kind(cur[i]) === f.t) e = cur[i]; /* 结构变化时按顺序兜底 */
-        if(!e){ miss++; return; }
-        if(e.tagName === 'SELECT'){
-          var hit = $$('option', e).filter(function(o){ return o.value === f.v || o.textContent.trim() === f.v; })[0];
-          if(!hit){ miss++; return; }
-        }
-        prev.push([e, e.value]);
-        setVal(e, e.tagName === 'SELECT' ? hit.value : f.v);
-        rows.push([kind(e), label(e), e.value]);
+      var n = applyFields(rec.fields, '已回填 ');
+      if(n) toast('已回填 ' + n + ' 个字段');
+    }));
+    row.appendChild(btn('复制', function(){
+      var rec = load()[HOST];
+      if(!rec || !rec.fields || !rec.fields.length){ toast('当前站点还没有保存的表单，先「保存表单」'); return; }
+      var text = JSON.stringify({ _v:1, host:HOST, ts:rec.ts, fields:rec.fields });
+      copyText(text).then(function(){ toast('已导出 ' + rec.fields.length + ' 个字段，可到其它页面「粘贴」'); },
+        function(){ window.prompt('复制失败，请手动复制以下内容：', text); });
+    }));
+    row.appendChild(btn('粘贴', function(){
+      readClip().then(function(text){
+        var list = unpack(text);
+        if(!list || !list.length){ toast('剪贴板里没有可用的表单 JSON'); return; }
+        var n = applyFields(list, '已粘贴填充 ');
+        if(n) toast('已粘贴填充 ' + n + ' 个字段，误填可撤销');
       });
-      if(!rows.length){ toast('没找到匹配的表单字段（页面结构可能变了）'); return; }
-      undoable(prev);
-      showRows('已回填 ' + rows.length + ' 个字段' + (miss ? ' · ' + miss + ' 个未匹配' : ''), rows);
-      toast('已回填 ' + rows.length + ' 个字段');
     }));
     row.appendChild(btn('随机填充', function(){
       var fs = fields(), prev = [], rows = [];
@@ -263,7 +302,7 @@ B.register([
     b.appendChild(status);
     b.appendChild(out);
     refresh();
-    b.appendChild(note('随机填充按 name / placeholder / label / autocomplete 猜语义：邮箱 / 手机号 / 邮编 / 验证码 / 身份证给格式化假数据，姓名给中文随机名，省市地址给地区名，下拉框随机选非占位项，其余填随机字母；尊重 maxlength。保存按站点存于 localStorage["ba:formkit"]，密码字段跳过。填充走原生 setter + input/change 事件（兼容 React / Vue），误填可从撤销条恢复。'));
+    b.appendChild(note('随机填充按 name / placeholder / label / autocomplete 猜语义：邮箱 / 手机号 / 邮编 / 验证码 / 身份证给格式化假数据，姓名给中文随机名，省市地址给地区名，下拉框随机选非占位项，其余填随机字母；尊重 maxlength。保存按站点存于 localStorage["ba:formkit"]，密码字段跳过。填充走原生 setter + input/change 事件（兼容 React / Vue），误填可从撤销条恢复。「复制」把本站已保存表单导出为 JSON 到剪贴板，「粘贴」把剪贴板里的 JSON 直接填进当前页面（与「填充已保存」同一套匹配逻辑，跨站点按顺序兜底）。'));
   }}
 ]);
 })(window.BATB);

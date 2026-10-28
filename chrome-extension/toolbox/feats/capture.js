@@ -376,7 +376,7 @@ B.register([
       wrap.appendChild(el('div', 'grp-h', title));
       if(!hs || !hs.length){ wrap.appendChild(el('div', 'note', '（无）')); return wrap; }
       hs.forEach(function(h){
-        wrap.appendChild(el('div', 'li', '<span class="u" style="word-break:break-all">' + esc(h.k) + ': ' + esc(h.v) + '</span>'));
+        wrap.appendChild(el('div', 'li', '<span class="u" style="word-break:break-all;white-space:normal;overflow:visible;text-overflow:clip">' + esc(h.k) + ': ' + esc(h.v) + '</span>'));
       });
       return wrap;
     }

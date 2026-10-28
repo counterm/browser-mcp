@@ -33,6 +33,7 @@ TOKEN = os.environ.get("BRIDGE_TOKEN", "")
 PORT = int(os.environ.get("BRIDGE_PORT", "8766"))
 
 PAGES = {}     # pid -> {'info': dict, 'ws': ws|None, 'queue': Queue|None, 'last_seen': float, 'mode': str}
+MARKS = {}     # mark id -> {'pid': str, 'online': bool, 'info': dict, 'last_seen': float}
 WAITERS = {}   # mid -> (Future, pid)
 SSE = []       # 广播订阅者队列
 CLIENTS = set()  # /client 长连接
@@ -42,6 +43,9 @@ HELP = """Page Bridge Broker
   GET  /pages                 页面列表（外部发现）
   GET  /events                SSE 广播（page_up/page_update/page_down/page_event）
   POST /call/{pid}            下发命令: {"action":"snapshot"} (?timeout=30)
+  GET  /marks                页桥标记列表（mark -> pid/url 映射）
+  GET  /mark/{mark}           按标记查页面（在线状态 + pid + url/title）
+  POST /mark/{mark}           按标记下发命令（等价 /call/{pid}）
   WS   /page                  页面接入        WS   /client                外部长连接
 """
 
@@ -57,8 +61,8 @@ def deny():
 
 
 def public(page) -> dict:
-    return {**page["info"], "id": page["id"], "mode": page["mode"],
-            "ago": round(time.time() - page["last_seen"], 1)}
+    return {**page["info"], "id": page["id"], "mark": page["info"].get("mid"),
+            "mode": page["mode"], "ago": round(time.time() - page["last_seen"], 1)}
 
 
 async def ws_send(ws, obj):
@@ -80,10 +84,14 @@ def broadcast(evt: dict):
 
 def register_page(info: dict, ws=None) -> str:
     pid = uuid.uuid4().hex[:8]
+    # 页桥标记：页面端 JS 生成（扩展 background 的 markId）优先；长轮询等未提供的由服务端补一个
+    mid = info.get("mid") or ("pb_" + uuid.uuid4().hex[:10])
+    info["mid"] = mid
     PAGES[pid] = {
         "id": pid, "info": info, "ws": ws, "mode": "ws" if ws else "lp",
         "queue": None if ws else asyncio.Queue(), "last_seen": time.time(),
     }
+    MARKS[mid] = {"pid": pid, "online": True, "info": info, "last_seen": time.time()}
     broadcast({"type": "page_up", "page": public(PAGES[pid])})
     return pid
 
@@ -92,11 +100,17 @@ def drop_page(pid: str, reason="closed"):
     page = PAGES.pop(pid, None)
     if not page:
         return
-    for mid, (fut, owner) in list(WAITERS.items()):
+    mid = page["info"].get("mid")
+    if mid and mid in MARKS:
+        # 标记不删除：保留最后一次 url/title，只置为离线，凭标记仍能查到"最后一次访问的页面"
+        MARKS[mid]["online"] = False
+        MARKS[mid]["last_seen"] = time.time()
+        MARKS[mid]["info"] = page["info"]
+    for wid, (fut, owner) in list(WAITERS.items()):
         if owner == pid:
             if not fut.done():
                 fut.set_result({"ok": False, "error": f"page {reason}"})
-            WAITERS.pop(mid, None)
+            WAITERS.pop(wid, None)
     broadcast({"type": "page_down", "page_id": pid, "reason": reason})
 
 
@@ -131,6 +145,10 @@ def handle_page_msg(pid: str, msg: dict):
         for k in ("url", "title", "viewport", "eval_mode"):
             if msg.get(k):
                 page["info"][k] = msg[k]
+        mid = page["info"].get("mid")
+        if mid and mid in MARKS:
+            MARKS[mid]["info"] = page["info"]
+            MARKS[mid]["last_seen"] = time.time()
         if changed:
             broadcast({"type": "page_update", "page": public(page)})
     elif t == "result":
@@ -156,7 +174,7 @@ async def h_page_ws(request):
             continue
         t = data.get("type")
         if t == "hello":
-            info = {k: data.get(k) for k in ("url", "title", "viewport", "ua", "eval_mode") if data.get(k)}
+            info = {k: data.get(k) for k in ("url", "title", "viewport", "ua", "eval_mode", "mid") if data.get(k)}
             pid = register_page(info, ws=ws)
             await ws.send_json({"type": "welcome", "page_id": pid})
         elif t == "bye" and pid:
@@ -176,7 +194,7 @@ async def h_lp_register(request):
         data = await request.json()
     except ValueError:
         return web.json_response({"error": "bad json"}, status=400)
-    info = {k: data.get(k) for k in ("url", "title", "viewport", "ua") if data.get(k)}
+    info = {k: data.get(k) for k in ("url", "title", "viewport", "ua", "mid") if data.get(k)}
     return web.json_response({"sid": register_page(info, ws=None)})
 
 
@@ -249,12 +267,8 @@ async def h_events(request):
     return resp
 
 
-async def h_call(request):
-    if not authorized(request):
-        return deny()
-    page = PAGES.get(request.match_info["pid"])
-    if not page:
-        return web.json_response({"error": "page not found"}, status=404)
+async def forward(request, page):
+    """把请求体当命令下发给页面并等结果（/call 与 /mark 共用）。"""
     try:
         cmd = await request.json()
     except ValueError:
@@ -268,6 +282,62 @@ async def h_call(request):
         return web.json_response({"error": "page has no live transport"}, status=409)
     return web.json_response({"ok": res.get("ok", False),
                               "data": res.get("data"), "error": res.get("error")})
+
+
+async def h_call(request):
+    if not authorized(request):
+        return deny()
+    page = PAGES.get(request.match_info["pid"])
+    if not page:
+        return web.json_response({"error": "page not found"}, status=404)
+    return await forward(request, page)
+
+
+async def h_marks(request):
+    if not authorized(request):
+        return deny()
+    out = []
+    for mid, m in MARKS.items():
+        info = m["info"]
+        out.append({"mark": mid, "online": bool(m["online"] and m["pid"] in PAGES),
+                    "pid": m["pid"], "url": info.get("url"), "title": info.get("title"),
+                    "ago": round(time.time() - m["last_seen"], 1)})
+    return web.json_response(sorted(out, key=lambda x: x["mark"]))
+
+
+async def h_mark(request):
+    """按标记查页面：即使页面已离线，也返回最后一次的 url/title。"""
+    if not authorized(request):
+        return deny()
+    mid = request.match_info["mid"]
+    m = MARKS.get(mid)
+    if not m:
+        return web.json_response({"error": "mark not found", "mark": mid}, status=404)
+    page = PAGES.get(m["pid"]) if m["online"] else None
+    info = page["info"] if page else m["info"]
+    body = {"mark": mid, "online": bool(page), "pid": m["pid"] if page else None,
+            "url": info.get("url"), "title": info.get("title"),
+            "ago": round(time.time() - (page["last_seen"] if page else m["last_seen"]), 1)}
+    if page:
+        body["usage"] = {
+            "snapshot": f'POST /mark/{mid} {{"action":"snapshot"}}',
+            "any": f'POST /mark/{mid} <命令 JSON>（同 /call/{m["pid"]}）',
+        }
+    return web.json_response(body)
+
+
+async def h_mark_call(request):
+    if not authorized(request):
+        return deny()
+    mid = request.match_info["mid"]
+    m = MARKS.get(mid)
+    if not m:
+        return web.json_response({"error": "mark not found", "mark": mid}, status=404)
+    page = PAGES.get(m["pid"]) if m["online"] else None
+    if not page:
+        return web.json_response({"error": "page offline", "mark": mid,
+                                  "last_url": m["info"].get("url")}, status=409)
+    return await forward(request, page)
 
 
 async def h_client_ws(request):
@@ -322,6 +392,10 @@ async def _janitor_loop():
             live_ws = p["ws"] is not None and not p["ws"].closed
             if not live_ws and now - p["last_seen"] > 40:
                 drop_page(pid, "timeout")
+        # 离线标记保留 24h 供外部按标记回查最近一次页面，之后清掉避免无限增长
+        for mid, m in list(MARKS.items()):
+            if not m["online"] and now - m["last_seen"] > 86400:
+                MARKS.pop(mid, None)
 
 
 def main():
@@ -331,6 +405,9 @@ def main():
         web.get("/pages", h_pages),
         web.get("/events", h_events),
         web.post("/call/{pid}", h_call),
+        web.get("/marks", h_marks),
+        web.get("/mark/{mid}", h_mark),
+        web.post("/mark/{mid}", h_mark_call),
         web.get("/page", h_page_ws),
         web.get("/client", h_client_ws),
         web.post("/lp/register", h_lp_register),
