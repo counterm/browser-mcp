@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Page Bridge
 // @namespace    browser-agent
-// @version      0.1.0
+// @version      0.1.15
 // @description  轻接入：油猴自动加载，把当前页面广播给本地 broker，供任意 CLI/IDE 发现并接入控制
 // @match        *://*/*
 // @match        file:///*
