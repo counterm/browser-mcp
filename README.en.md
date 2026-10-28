@@ -34,7 +34,6 @@ Current version: **v0.1.16** (kept in sync between `chrome-extension/manifest.js
 | ├ `content.js` | Content script: one instance per tab, responsible for DOM snapshots and action execution (click/type/eval, etc.); also relays extension-bridge messages for the in-page toolbox (`batb:bridge` → background) and forwards LLM `netlog` / `plog` queries to the page capture layer |
 | └ `toolbox/` | In-page toolbox (production build of the design prototype in `docs/toolbox/`): 14 zero-build modules injected into the page MAIN world by background according to the allowlist; six categories, 36 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture) |
 | `page-bridge.user.js` | Connector option B: userscript version. Mutually exclusive with the extension; falls back to GM long-polling when blocked by page CSP |
-| `build/` | Packaging artifacts and test key: `make-test-key.mjs` (generates a test private key), `debug-extension.pem`, `chrome-extension.crx` |
 | `docs/research/1.md` | Early research notes (how console injection works and where it hurts) |
 
 > The extension and the userscript overlap in functionality — **do not install both**, or a single tab will register twice in the broker.
@@ -78,43 +77,13 @@ curl http://127.0.0.1:8766/pages
 
 Open a few tabs and each one shows up as a record. The list updates automatically when pages close or navigate.
 
-### Packaging the Chrome extension
+### Installing and updating the extension
 
-**Option 1: zip distribution (most common)**
+Only "Load unpacked" is supported — load the `chrome-extension` directory directly (see Quick start → Connect a browser). No zip / `.crx` / store distribution.
 
-```powershell
-Compress-Archive -Path chrome-extension\* -DestinationPath page-bridge-extension.zip
-```
-
-The recipient extracts it and installs it with "Load unpacked" as described above (Developer mode required).
-Note: Chrome on Windows **does not allow** dragging and dropping a non-store `.crx`; zip + Developer mode is the easiest local distribution method.
-
-**Option 2: Chrome's built-in packer (produces a .crx)**
-
-`chrome://extensions` → "Pack extension" → choose `chrome-extension` as the extension root → Pack.
-You get a `.crx` plus a private key `.pem`. **Keep the .pem safe**: future updates must be packed with the same key so the extension ID stays the same.
-
-Command-line equivalent (also useful for automating the test flow):
-
-```powershell
-# 1. Generate a test private key (outputs build\debug-extension.pem and the matching extension ID)
-node build\make-test-key.mjs
-
-# 2. Pack with the specified key
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-    --pack-extension="E:\WORK\PROJECT\TOOLS\browser-agent\chrome-extension" `
-    --pack-extension-key="E:\WORK\PROJECT\TOOLS\browser-agent\build\debug-extension.pem"
-# Output: chrome-extension.crx (Chrome writes it next to the extension directory by default)
-```
-
-The extension ID is derived solely from the private key (the test key maps to `nfljnkjkdgddlmfnmgogjkipcaekndll`),
-and `make-test-key.mjs` refuses to overwrite an existing `.pem` so the ID cannot change by accident.
-⚠️ The test key is for local use only; leaking it means anyone can push updates to the same extension ID.
-
-**Option 3: publish to the Chrome Web Store**
-
-Register first at the [developer dashboard](https://chrome.google.com/webstore/devconsole) (one-time $5) → upload the zip from option 1 → review.
-This extension requests `<all_urls>` + `tabs`, so review will ask for a justification and may take a few days.
+- **After changing extension code**: `chrome://extensions` → click "Reload" on the extension card → refresh the target page (only then does `content.js` run the latest logic)
+- **To drive local `file://` pages**: enable "Allow access to file URLs" on the extension details page
+- **Uninstall / reinstall**: an unpacked extension has no fixed key, so its ID derives from the directory path; just reopen the target pages to reconnect
 
 ### External integration (any CLI / IDE, no SDK)
 

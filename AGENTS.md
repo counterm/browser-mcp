@@ -12,9 +12,9 @@ an agent would otherwise miss.
 - **CLI client** (pure stdlib, no deps):
   `python cli_client.py list|watch|snap <url-substr>|call <pid> <json>|run "<task>" --match <regex>`
   - `run` needs `OPENAI_API_KEY` (+ optional `OPENAI_BASE_URL`, `BRIDGE_MODEL`).
-- **Extension packaging**:
-  - zip: `Compress-Archive -Path chrome-extension\* -DestinationPath <out>.zip`
-  - `.crx`: `node build\make-test-key.mjs` then `chrome --pack-extension=... --pack-extension-key=build\debug-extension.pem`
+- **Extension install**: only "Load unpacked" is supported —
+  `chrome://extensions` → enable Developer mode → "Load unpacked" → pick
+  `chrome-extension/`. No zip / `.crx` packaging; `build/` is git-ignored.
 
 ## Verification reality — read before running anything
 
@@ -73,8 +73,6 @@ Toolbox conventions:
   it via the userScripts channel which needs **Chrome ≥ 135** with the manual
   "Allow user scripts" toggle (`manifest.minimum_chrome_version` is 120).
   `/pages` exposes `eval_mode` = `userscript` | `fallback` for awareness.
-- Extension **ID is derived from the private key**; `make-test-key.mjs`
-  refuses to overwrite an existing `.pem` (new key = new ID).
 
 ## Conventions
 

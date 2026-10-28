@@ -10,6 +10,5 @@ __pycache__/
 # MCP screenshot 工件 (page_call screenshot 落盘目录)
 .screenshots/
 
-# 打包产物（私钥 / crx 不入库，只保留生成脚本）
-build/*
-!build/make-test-key.mjs
+# 本地产物（打包 / 私钥等，不入库）
+build/

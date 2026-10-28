@@ -33,7 +33,6 @@
 | ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` / `plog` 查询转给页面捕获层 |
 | └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 接入端方案 B：油猴脚本版。与扩展二选一；被页面 CSP 拦截时自动降级 GM 长轮询 |
-| `build/` | 打包产物与测试密钥：`make-test-key.mjs`（生成测试私钥）、`debug-extension.pem`、`chrome-extension.crx` |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
 
 > 扩展版与油猴版功能重叠，**不要同时装**，否则同一标签页会在 broker 里注册两条。
@@ -77,43 +76,13 @@ curl http://127.0.0.1:8766/pages
 
 打开几个标签页，每个都会出现一条记录。页面关闭/跳转时列表自动更新。
 
-## Chrome 扩展怎么打包
+## 扩展安装与更新
 
-**方式一：zip 分发（最常用）**
+只支持「加载解压缩的扩展」，即直接加载 `chrome-extension` 目录（步骤见上文「快速开始 · 浏览器接入」），不做 zip / `.crx` / 商店分发。
 
-```powershell
-Compress-Archive -Path chrome-extension\* -DestinationPath page-bridge-extension.zip
-```
-
-对方解压后按上面「加载已解压的扩展程序」安装（需开发者模式）。
-注意：Windows 版 Chrome **不允许**直接拖装非商店 `.crx`，zip + 开发者模式是最省事的本地分发方式。
-
-**方式二：Chrome 自带打包（生成 .crx）**
-
-`chrome://extensions` → 「打包扩展程序」→ 扩展程序根目录选 `chrome-extension` → 打包。
-得到 `.crx` + 私钥 `.pem`。**保管好 .pem**：以后更新要用同一私钥打包，扩展 ID 才不变。
-
-命令行等效（也可用于测试流程自动化）：
-
-```powershell
-# 1. 生成测试私钥（输出 build\debug-extension.pem + 对应扩展 ID）
-node build\make-test-key.mjs
-
-# 2. 用指定私钥打包
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-    --pack-extension="E:\WORK\PROJECT\TOOLS\browser-agent\chrome-extension" `
-    --pack-extension-key="E:\WORK\PROJECT\TOOLS\browser-agent\build\debug-extension.pem"
-# 产出: chrome-extension.crx（Chrome 默认写在扩展目录旁）
-```
-
-扩展 ID 由私钥唯一决定（如测试密钥对应 `nfljnkjkdgddlmfnmgogjkipcaekndll`），
-`make-test-key.mjs` 拒绝覆盖已有 `.pem`，防止误删后 ID 变化。
-⚠️ 测试私钥仅限本地使用；泄露私钥 = 任何人可向同一扩展 ID 推送更新。
-
-**方式三：上架 Chrome Web Store**
-
-先在[开发者后台](https://chrome.google.com/webstore/devconsole)注册（一次性 $5）→ 上传方式一的 zip → 审核。
-本扩展申请了 `<all_urls>` + `tabs` 权限，审核会要求说明用途，可能需要几天。
+- **改了扩展代码**：`chrome://extensions` → 该扩展卡片点「重新加载」→ 刷新目标页面（`content.js` 才会带上最新逻辑）
+- **驱动本地 `file://` 页面**：扩展详情页开启「允许访问文件网址」
+- **卸载重装**：未指定私钥的未打包扩展，ID 由目录路径推导；重装后重新打开目标页面即可重新接入
 
 ## 外部怎么接入（任何 CLI / IDE，无需 SDK）
 
