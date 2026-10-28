@@ -2,6 +2,20 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · page-bridge 编排易用性优化（v0.1.16）
+
+依据 `cipher-registration/docs/e2e/2026-10-28-page-bridge执行记录.md` 的实战反馈优化四个方面：
+
+- **元素定位三选一**：`click` / `type` / `select` / `scroll` / `hover` / `upload` / `highlight` 除 `bid` 外支持 `selector`（CSS）与 `text`（按可见文本匹配，全等优先、包含兜底）——快照没给 bid 的自绘组件（如 el-link 图标壳）也能直接操作。`content.js` 与 `page-bridge.user.js` 同步
+- **定位报错可自纠**：`element not found` 报错带上实际尝试的参数（`bid=3 / selector=… / text="…"`），并提示先 snapshot/dom 确认，LLM 能自行重试
+- **快照优化**：表单控件显示当前值（el-select 从包装容器读选中文案，不再永远空白；密码框脱敏为 `***`；原生 select 显示 `选中文案 (value=…)`）；无 href 无文本的装饰性 `<a>` 不再进快照；`snapshot` 支持 `max`（元素条数，默认 300）/ `text_max`（正文字符数，默认 6000，0 省略）
+- **mark 跨导航稳定**：`background.js` 的 `dropEntry`（导航/刷新 bye）不再清 `mark:<tabId>`，只有 `tabs.onRemoved` 才清——SPA 站点站内跳转后原 mark 依然可用
+- **修复 netlog get/curl 不可达**：broker 传输层不再用 `id` 键做命令关联（此前会把 `netlog get {"id":N}` 的参数覆盖掉，永远 record not found），改用保留键 `__mid`，命令没带 id 时补发兼容旧页面端；扩展与油猴侧 `route/onCommand` 相应兼容 `__mid ?? id`
+- **MCP 截图落盘**：`page_call` 的 `screenshot` 结果 base64 自动存到 broker 目录 `.screenshots/`，返回 `{format, path, bytes}`，LLM 用 Read 工具直接看图，不再撑爆上下文
+- **MCP `page_snapshot` 透传** `max` / `text_max` 参数，工具描述补充用法
+- **README 修正**（中英同步）：「允许用户脚本」开关**需重载扩展后生效**（SW 常驻时开关不会实时生效，原「约 5 秒自动生效」说法有误）；排错表补「页面响应超时（后台 tab 冻结，先 tab_activate）」与「element not found（重新 snapshot）」两条；命令表标注三选一定位
+- 版本号 0.1.15→0.1.16（manifest / 油猴 / README 首屏同步）；`node --check` 全部通过，`broker.py` py_compile 通过，`save_dataurl` 单测通过；扩展侧需重载扩展并刷新页面，broker 需重启后生效
+
 ## 2026-10-28 · 工具箱中英双语 + README 英文镜像
 
 - 工具箱新增语言层：`core.js` 提供 `B.t(中文, 英文)` / `B.lang` / `B.setLang()` / `B.toggleLang()` / `B.onLang()`，默认中文，选择存 `localStorage["ba:tbx-lang"]`，刷新后保持
@@ -9,7 +23,7 @@
 - 分类与全部功能对象补 `en:{ name, desc }`；所有界面文案统一 `t('中文','English')`——分类名/描述、功能名/描述、结果卡片标签、按钮、toast、note、placeholder、生成代码注释、复制到剪贴板的 prompt（含 MCP 交接提示词）、空状态与错误提示
 - 各功能模块补 `t = B.t` 别名；`find.js` 内局部变量 `t`（tabs 按钮）与 `llm.js` 的 a11y 循环参数改名，避免遮蔽
 - `boot.js` 拆出 `bindHeader()` / `bindCats()`，新增 `B.rebindLang()`：切换语言只重绑被重绘的头部与分类按钮，**不重跑** `B.rebind()`，避免 FAB / Popover 重复叠加监听
-- README 顶部加 `简体中文 ｜ English` 语言导航，正文保持中文为主，文末新增完整英文镜像（`## English`）；工具箱章节补充双语说明
+- README 改为中英双文件：`README.md` 中文（默认展示）、`README.en.md` 英文，两份均为完整内容，顶部用相对路径互链（`[English](./README.en.md)` / `[简体中文](./README.md)`）；原「单文件文末英文镜像」做法废弃
 - `docs/toolbox-proto-map.md` 新增「中英双语（i18n）」约定章节并更新 core/ui/boot 模块导出说明
 - 原型 `docs/toolbox/` 与扩展 `chrome-extension/toolbox/` 两套同步修改；`node --check` 全部通过（28 个 JS）；扩展侧需重载扩展并刷新页面后生效
 
