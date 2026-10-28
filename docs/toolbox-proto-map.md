@@ -113,12 +113,12 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 
 | id | grp | 功能 | 级 |
 |---|---|---|---|
-| `skeleton` | copy | 一键复制精简 DOM | ★★★ |
+| `skeleton` | copy | 一键复制精简 DOM（Pug 缩进树，`B.pugDom`） | ★★★ |
 | `redact` | copy | 数据脱敏 | ★★★ |
 | `elqa` | copy | 选中元素问答 | ★★★ |
 | `storectx` | store | 存入页面上下文（`__BA_CTX__` + `localStorage["ba:ctx"]`） | ★★★ |
 | `storeel` | store | 存入选中元素（`__BA_EL__`） | ★★ |
-| `marker` | store | 复制页桥标记（网页 id，扩展接入时用 JS 生成 → `chrome.storage.session` → broker `GET /mark/<id>`） | ★★★ |
+| `marker` | store | 复制页桥标记（网页 id，扩展接入时用 JS 生成 → `chrome.storage.session` → broker `GET /mark/<id>`）；另有「MCP 提示页面」按钮，复制面向通用 MCP 工具的页面交接提示词 | ★★★ |
 | `a11y` | copy | a11y 修复建议 | ★ 高级 |
 
 **feats/build.js（开发产物，5 项）**

@@ -122,6 +122,8 @@ node build\make-test-key.mjs
 | `GET /mark/{mark}` | 按标记查网页：返回在线状态、`pid`、URL、标题（离线时给最后一次的 URL） |
 | `POST /mark/{mark}` | 按标记执行命令（body 同 `/call/{pid}`，如 `{"action":"snapshot"}`） |
 | `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合 IDE agent 常驻会话） |
+| `POST /mcp` | **MCP 服务器**（Streamable HTTP，无状态）：`initialize` / `tools/list` / `tools/call` |
+| `GET /sse` + `POST /messages` | **MCP 服务器**（旧版 HTTP+SSE 传输），供只支持 SSE 的客户端 |
 
 ```powershell
 # 发现并校验 URL（"是否适合接入"由外部自己判断，比如正则匹配域名）
@@ -137,6 +139,56 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"click\",\"bid
 curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}"
 ```
 
+## MCP 接入（broker 自带，只跑一个进程）
+
+`broker.py` 直接提供 MCP 服务（HTTP 与 broker 同端口；stdio 则随 MCP 客户端拉起）：页面接入、CLI 调用、MCP 客户端共用这一个进程，不需要另起 MCP 服务，也不需要额外依赖。
+
+| 传输 | 地址 / 命令 | 说明 |
+|---|---|---|
+| Streamable HTTP（推荐） | `http://127.0.0.1:8766/mcp` | 无状态，`POST` 直接返回 JSON-RPC 响应；`GET /mcp` 按规范返回 405 |
+| 旧版 HTTP+SSE | `http://127.0.0.1:8766/sse` | `GET /sse` 下发 endpoint 事件 → `POST /messages?sessionId=...`，响应走 SSE |
+| stdio | `python broker.py --stdio` | 由 MCP 客户端拉起，**broker 随 MCP 一起启动**，无需先跑 `start-broker.bat` |
+
+**方式一：连已启动的 broker**（先跑 `start-broker.bat`；开了 `BRIDGE_TOKEN` 时 URL 追加 `?token=<token>`）：
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": { "url": "http://127.0.0.1:8766/mcp" }
+  }
+}
+```
+
+**方式二：让 MCP 客户端自动拉起（stdio，进程即 broker）**：
+
+```json
+{
+  "mcpServers": {
+    "page-bridge": {
+      "command": "python",
+      "args": ["E:\\WORK\\PROJECT\\TOOLS\\browser-agent\\broker.py", "--stdio"]
+    }
+  }
+}
+```
+
+- 用绝对路径；走项目虚拟环境时把 `command` 换成 `…\\browser-agent\\.venv\\Scripts\\python.exe`
+- 进程内同时跑 stdio JSON-RPC 和 `127.0.0.1:8766` 中枢，页面照常接入；stdout 只留 JSON-RPC，日志全部走 stderr
+- 客户端断开（stdin EOF）后进程自动退出、端口释放
+- 同一端口只允许一个实例：已有 broker 在跑时 stdio 实例会报错退出，此时改用方式一
+- 不要把 `start-broker.bat` 配成 stdio 的 `command`——bat 的 echo 会污染 stdout
+
+MCP 工具：
+
+| 工具 | 参数 | 作用 |
+|---|---|---|
+| `list_pages` | - | 发现当前接入的页面（id / mark / url / title / ago） |
+| `list_marks` | - | 标记列表（离线时也给最后一次 URL） |
+| `page_snapshot` | `page?` | 实时快照（交互元素带 bid 编号 + 正文） |
+| `page_call` | `page?, action, timeout?, ...` | 下发任意命令，参数同下方命令表（click / type / nav / eval / dom / screenshot…） |
+
+`page` 可传标记 id 或 pid；只有一个在线页面时可省略。工具调用与 `/call` 走同一条转发链路，超时上限同样 120s。
+
 ## 命令一览
 
 `bid` 可传快照里的元素编号，也可直接传 CSS selector。
@@ -145,6 +197,7 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}
 |---|---|---|
 | `ping` | - | 探活，返回页面信息 |
 | `snapshot` | - | 页面快照：url/title/viewport/滚动位置/元素列表/正文 |
+| `dom` | `selector?, bid?, depth?, maxNodes?, maxChars?, collapse?, redact?` | 精简 DOM：**Pug 缩进树**（`tag.class#id(attr) 文本`），保留层级与语义属性。默认 `selector=body`、深度 8、1500 节点、6 万字符、连续同类兄弟 ≥3 折叠为 `×N`、`redact=true` 脱敏；传 `bid`（或 `selector` 填纯数字）可只输出该元素及其子孙；返回 `{selector, nodes, chars, truncated, content}` |
 | `click` | `bid` | 滚动到元素并点击（带完整鼠标事件序列） |
 | `type` | `bid, text, clear?` | 输入文本，走原生 setter，兼容 React/Vue 受控组件 |
 | `press` | `key, bid?` | 按键（Enter 会自动提交表单/点击） |

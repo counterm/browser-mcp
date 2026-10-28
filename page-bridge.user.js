@@ -120,6 +120,85 @@
     };
   }
 
+  /* ============ 1.1 精简 DOM（Pug 缩进树） ============
+   * 前端调试/写选择器用：保留层级与语义属性，按深度/节点/字符三重裁剪，
+   * 连续同类兄弟超过阈值折叠为 ×N，避免整页 HTML 撑爆上下文。 */
+
+  const DOM_ATTRS = ['name', 'type', 'href', 'src', 'placeholder', 'role',
+    'aria-label', 'data-testid', 'data-test', 'data-cy', 'data-id'];
+  const DOM_SKIP = { SCRIPT: 1, STYLE: 1, SVG: 1, NOSCRIPT: 1, LINK: 1, META: 1, TEMPLATE: 1 };
+  const REDACT_RULES = [
+    [/\b1[3-9]\d{9}\b/g, '[PHONE]'],
+    [/\b\d{17}[\dXx]\b/g, '[ID]'],
+    [/\b[\w.-]+@[\w.-]+\.\w+\b/g, '[EMAIL]'],
+    [/\b(sk|ghp|xoxb)-[\w-]{10,}/g, '[TOKEN]'],
+    [/\beyJ[\w-]{10,}\.[\w-]+/g, '[JWT]'],
+  ];
+  const redactText = (t) => REDACT_RULES.reduce((s, r) => s.replace(r[0], r[1]), t);
+
+  function ownText(el) {
+    let t = '';
+    for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue;
+    return t.replace(/\s+/g, ' ').trim();
+  }
+
+  function pugLine(el) {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3);
+    if (cls.length) s += cls.map((c) => '.' + c).join('');
+    const attrs = [];
+    for (const k of DOM_ATTRS) {
+      const v = el.getAttribute(k);
+      if (v != null) attrs.push(`${k}="${v.replace(/\s+/g, ' ').slice(0, 60).replace(/"/g, '&quot;')}"`);
+    }
+    if (el.hasAttribute('disabled')) attrs.push('disabled');
+    if (el.hasAttribute('checked')) attrs.push('checked');
+    if (attrs.length) s += `(${attrs.join(' ')})`;
+    const txt = ownText(el);
+    if (txt) s += ' ' + (txt.length > 60 ? txt.slice(0, 60) + '…' : txt);
+    return s;
+  }
+
+  function pugDom(root, opts = {}) {
+    const maxDepth = opts.depth > 0 ? opts.depth : 8;
+    const maxNodes = opts.maxNodes > 0 ? opts.maxNodes : 1500;
+    const maxChars = opts.maxChars > 0 ? opts.maxChars : 60000;
+    const collapse = opts.collapse == null ? 3 : opts.collapse;
+    const lines = [];
+    let nodes = 0;
+    let chars = 0;
+    let stop = false;
+    let truncated = false;
+    const sig = (el) => el.tagName + '|' + (el.id || '') + '|' + (el.getAttribute('class') || '');
+    const emit = (el, depth) => {
+      if (stop) return;
+      if (depth > maxDepth) { truncated = true; return; }
+      if (nodes >= maxNodes) { stop = true; truncated = true; return; }
+      const line = '  '.repeat(depth) + pugLine(el);
+      chars += line.length + 1;
+      if (chars > maxChars) { stop = true; truncated = true; return; }
+      lines.push(line);
+      nodes++;
+      const kids = Array.from(el.children).filter((c) => !DOM_SKIP[c.tagName]);
+      for (let i = 0; i < kids.length; i++) {
+        let run = 1;
+        while (collapse >= 2 && i + run < kids.length && sig(kids[i + run]) === sig(kids[i])) run++;
+        if (collapse >= 2 && run >= collapse) {
+          const at = lines.length;
+          emit(kids[i], depth + 1);
+          if (lines.length > at) lines[at] += ' ×' + run;
+          i += run - 1;
+        } else {
+          emit(kids[i], depth + 1);
+        }
+      }
+    };
+    emit(root, 0);
+    if (truncated) lines.push(`…（已截断：节点 ${nodes}，字符 ${chars}）`);
+    return { content: lines.join('\n'), nodes, chars: lines.join('\n').length, truncated };
+  }
+
   function resolve(ref) {
     if (ref == null) return null;
     const s = String(ref);
@@ -154,6 +233,21 @@
   const ACTIONS = {
     ping: async () => ({ pong: true, ...pageInfo() }),
     snapshot: async () => buildSnapshot(),
+
+    // 精简 DOM：Pug 缩进树，默认脱敏；depth / maxNodes / maxChars / collapse 三重裁剪
+    // selector 传纯数字时按 bid 解析，也支持显式 bid 参数
+    dom: async ({ selector = 'body', bid = null, depth = 8, maxNodes = 1500, maxChars = 60000,
+      collapse = 3, redact = true } = {}) => {
+      const ref = bid != null ? bid : (/^\d+$/.test(String(selector)) ? selector : null);
+      const root = ref != null ? resolve(ref)
+        : (selector === 'body' ? document.body : document.querySelector(selector));
+      if (!root) throw new Error(`元素不存在：${ref != null ? 'bid ' + ref : selector}`);
+      const r = pugDom(root, { depth, maxNodes, maxChars, collapse });
+      return {
+        selector: ref != null ? 'bid ' + ref : selector, nodes: r.nodes, chars: r.chars, truncated: r.truncated,
+        content: redact ? redactText(r.content) : r.content,
+      };
+    },
 
     click: async ({ bid }) => {
       const el = need(bid);

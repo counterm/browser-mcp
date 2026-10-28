@@ -14,7 +14,7 @@ const CFG = { host: '127.0.0.1', port: 8766, hbMs: 5000 };
 importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
 
 const CONTENT_ACTIONS = [
-  'ping', 'snapshot', 'click', 'type', 'press', 'select', 'scroll', 'hover',
+  'ping', 'snapshot', 'dom', 'click', 'type', 'press', 'select', 'scroll', 'hover',
   'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog',
 ];
 const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
@@ -245,8 +245,9 @@ async function handleFilterMessage(msg, sendResponse) {
 const NET_TAB_MAX = 150;      // 每 tab 环形上限（条）
 const NET_TAB_BYTES = 2e6;    // 每 tab 序列化体积上限（session 总配额 10MB，后台侧不存响应体）
 const NET_BODY_MAX = 16384;   // 请求体截断上限（字符）
-// 只记接口类请求；webRequest 的 type 里 image / stylesheet / script / font / media 等静态资源全部跳过
-const NET_TYPES = new Set(['xmlhttprequest', 'other', 'websocket', 'ping']);
+// 只记接口类请求；image / stylesheet / script / font / media 等静态资源跳过。
+// 文档（DevTools 里显示为 doc）在 webRequest 里是 main_frame（当前页面）/ sub_frame（iframe），一并记录。
+const NET_TYPES = new Set(['xmlhttprequest', 'other', 'websocket', 'ping', 'main_frame', 'sub_frame']);
 const netPend = new Map();    // requestId -> 半成品（onBeforeRequest 起，onCompleted/onErrorOccurred 定稿）
 const netBuf = new Map();     // tabId -> 待写数组（防抖 800ms 批量落盘）
 const netFlush = new Map();   // tabId -> 防抖 timer

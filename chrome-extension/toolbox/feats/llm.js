@@ -6,7 +6,7 @@ var $$ = B.u.$$, el = B.u.el, esc = B.u.esc, copyText = B.u.copyText;
 var kv = B.w.kv, note = B.w.note, btn = B.w.btn, badge = B.w.badge, scoreBadge = B.w.scoreBadge, codeBox = B.w.codeBox, toast = B.w.toast;
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
 var pick = B.pick, ensurePicked = B.ensurePicked;
-var detectStack = B.detectStack, REDACT = B.REDACT, redact = B.redact, skeleton = B.skeleton, NET = B.NET;
+var detectStack = B.detectStack, REDACT = B.REDACT, redact = B.redact, pugDom = B.pugDom, NET = B.NET;
 
 /* 扩展桥：取本页 broker pid（MAIN world 拿不到 chrome.*，经 batb:bridge 中转） */
 function pinfo(){
@@ -29,17 +29,38 @@ function pinfo(){
 
 B.register([
 /* ===== 复制（结果进剪贴板，人工粘贴进对话） ===== */
-{ id:'skeleton', cat:'llm', grp:'copy', name:'一键复制精简 DOM', icon:'copy', star:3, desc:'去噪压缩为 JSON，含脱敏',
+{ id:'skeleton', cat:'llm', grp:'copy', name:'一键复制精简 DOM', icon:'copy', star:3, desc:'Pug 缩进树，去噪压缩 + 脱敏',
   run:function(b){
-    var raw = skeleton(document.body);
-    var safe = redact(raw);
-    var pre = el('pre'); pre.textContent = safe.slice(0, 3000) + (safe.length > 3000 ? '\n…（全长 ' + safe.length + ' 字符，已省略展示）' : '');
-    b.appendChild(el('div', 'd', '原文 <b>' + raw.length + '</b> 字符 → 精简后 <b>' + safe.length + '</b> 字符'));
-    b.appendChild(pre);
-    b.appendChild(el('div', 'row2')).appendChild(btn('复制精简 DOM（脱敏后）', function(){
+    var f = el('div', 'fld');
+    var inp = el('input'); inp.placeholder = 'CSS 选择器或 bid，如 .el-table__body / 12；留空 = 整页';
+    var go = btn('查询', function(){ render(inp.value.trim()); }, 'pri');
+    f.appendChild(inp); f.appendChild(go); b.appendChild(f);
+
+    var stats = el('div', 'd'); b.appendChild(stats);
+    var pre = el('pre'); b.appendChild(pre);
+    var row = el('div', 'row2'); b.appendChild(row);
+    var safe = '';
+    row.appendChild(btn('复制这段 Pug（脱敏后）', function(){
+      if(!safe){ toast('先查询一个元素'); return; }
       copyText(safe).then(function(){ toast('已复制（' + safe.length + ' 字符）'); });
     }, 'pri'));
-    b.appendChild(note('去噪规则：移除 script/style/svg，仅保留 id/class/href/name/aria-label/data-test* 等有效属性；脱敏在复制前完成。'));
+
+    function render(q){
+      var root = document.body, label = '整页';
+      if(q){
+        root = /^\d+$/.test(q) ? document.querySelector('[data-bid="' + q + '"]')
+          : document.querySelector(q);
+        label = /^\d+$/.test(q) ? 'bid ' + q : q;
+      }
+      if(!root){ toast('未找到元素：' + label); return; }
+      var res = pugDom(root, { depth: 10, maxNodes: 4000, maxChars: 200000, collapse: 3 });
+      safe = redact(res.content);
+      stats.innerHTML = '范围 <b>' + esc(label) + '</b> · 节点 <b>' + res.nodes + '</b> · Pug <b>' + safe.length + '</b> 字符'
+        + (res.truncated ? '（已达上限，已截断）' : '');
+      pre.textContent = safe.slice(0, 3000) + (safe.length > 3000 ? '\n…（全长 ' + safe.length + ' 字符，已省略展示）' : '');
+    }
+    render('');
+    b.appendChild(note('Pug 规则：2 空格缩进，tag.class#id(attr) 文本；只留 id/class/name/type/href/src/placeholder/aria-label/data-test*，丢弃 value 并在复制前脱敏；连续同类兄弟 ≥3 个折叠为 ×N；上限 深度 10 / 4000 节点 / 20 万字符。填入选择器或 bid 可只看该元素及其子孙。'));
   }},
 { id:'redact', cat:'llm', grp:'copy', name:'数据脱敏', icon:'shield', star:3, desc:'手机号、身份证、token、邮箱自动打码',
   run:function(b){
@@ -84,7 +105,7 @@ B.register([
       table: (function(){ var tb = document.querySelector('table'); if(!tb) return null;
         return $$('tr', tb).map(function(tr){ return $$('td,th', tr).map(function(c){ return c.textContent.trim(); }); }); })(),
       net: NET.slice(-20),
-      dom: redact(skeleton(document.body)).slice(0, 8000)
+      dom: redact(pugDom(document.body, { depth: 8, maxNodes: 800, maxChars: 8000 }).content)
     };
     var json = JSON.stringify(ctx);
     window.__BA_CTX__ = ctx;
@@ -129,9 +150,20 @@ B.register([
         return;
       }
       out.appendChild(kv([['标记 id', badge(mark, 'b')], ['页面', esc(title)], ['URL', esc(url)]]));
-      out.appendChild(el('div', 'row2')).appendChild(btn('复制标记 id', function(){
+      var row = el('div', 'row2');
+      row.appendChild(btn('复制标记 id', function(){
         copyText(mark).then(function(){ toast('已复制标记：' + mark); });
       }, 'pri'));
+      row.appendChild(btn('MCP 提示页面', function(){
+        var prompt =
+'【页面交接】请用你的 MCP 工具接手这个浏览器页面：\n' +
+'标记 id：' + mark + '\n' +
+'标题：' + String(title).replace(/\s+/g, ' ') + '\n' +
+'网址：' + url + '\n' +
+'优先按标记 id 选中该页面（工具不支持时按网址匹配），先读取一次页面快照确认是同一页面，再执行我接下来的指令。';
+        copyText(prompt).then(function(){ toast('已复制 MCP 提示'); });
+      }));
+      out.appendChild(row);
       out.appendChild(codeBox(
 '# 凭标记找回网页（本机 broker 在跑）\n' +
 'GET  ' + broker + '/mark/' + mark + '\n' +

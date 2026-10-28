@@ -2,10 +2,55 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · 精简 DOM 改为 Pug 缩进树，并新增 MCP `dom` 动作
+
+- 工具箱「一键复制精简 DOM」输出由精简 HTML 改为 **Pug 缩进树**：`tag.class#id(attr) 文本`，2 空格缩进；新增 `B.pugDom`（`helpers.js`），保留 id / class（前 3 个）/ name / type / href / src / placeholder / role / aria-label / data-test*，**丢弃 value**；直接文本超 60 字截断；连续同类兄弟 ≥3 折叠为 `×N`（比对签名含 `tag#id.class`，避免把 `#app` 与弹层误判成同类）；默认上限 深度 8 / 1500 节点 / 6 万字符（工具箱放宽到 10 / 4000 / 20 万）；扩展与原型两套同步
+- 页桥新增 `dom` 动作（`chrome-extension/content.js` + `page-bridge.user.js`）：参数 `selector / depth / maxNodes / maxChars / collapse / redact`，默认对输出脱敏（手机号 / 身份证 / 邮箱 / token / JWT），返回 `{selector, nodes, chars, truncated, content}`；`background.js` 的 `CONTENT_ACTIONS` 白名单加入 `dom`
+- 页桥 `dom` 支持指定元素：新增 `bid` 参数（`selector` 填纯数字也按 bid 解析），只输出该元素及其子孙；工具箱同名功能增加选择器/bid 输入框与「查询」，默认仍为整页
+- MCP 侧无需新增工具：`page_call {action:"dom"}` 即用；README 命令表与 MCP 工具说明、`docs/toolbox-proto-map.md` 同步
+- `node --check` 通过（content.js / background.js / page-bridge.user.js / 两套 helpers.js / 两套 feats/llm.js）；扩展侧需重载扩展并刷新页面、油猴侧需更新脚本后生效
+
+## 2026-10-28 · 修复 stdio 模式快照含非 GBK 字符导致 broker 崩溃
+
+- 现象：IDE 以 stdio 拉起 broker 后，`list_pages` 正常，但 `page_snapshot` 一旦返回含 emoji 等非 GBK 字符的快照，MCP 连接立即 `Connection closed`，此后所有工具报 `Tool not found`，进程消失、8766 端口只剩 TIME_WAIT
+- 原因：stdio 写回沿用 Windows 管道的默认 GBK 编码，`json.dumps(ensure_ascii=False)` 的结果遇不可编码字符时抛 `UnicodeEncodeError`，`mcp_stdio_loop` 没有兜底，异常直接终结进程（同时工具描述里的中文也因此显示为乱码）
+- 修复：`main()` 进入 stdio 模式时对专用输出流 `reconfigure(encoding="utf-8", errors="replace", newline="\n")`，与 MCP stdio 协议的 UTF-8 约定对齐
+- 验证：脚本按 IDE 方式（stdio + UTF-8）拉起 `broker.py --stdio`，对「工作台 - 密评备案信息系统」做 `page_snapshot`，返回 3148 字节 UTF-8 内容、中文标题正常、进程存活
+
+## 2026-10-28 · broker.py 支持 stdio 传输：MCP 客户端拉起即自动启动 broker
+
+- 新增 `--stdio`（或环境变量 `BRIDGE_MCP_STDIO=1`）：进程内同时跑 aiohttp 中枢（`127.0.0.1:8766`，页面照常接入）与 stdio JSON-RPC（每行一条，供 IDE 的 MCP 客户端用），无需先单独启动 broker
+- stdio 模式下 `stdout` 只留给 JSON-RPC——启动时把 `sys.stdout` 重定向到 `stderr`，原有 `print` 日志自动落到 stderr，不污染协议流
+- stdin 读取放在线程池（`run_in_executor`），Windows 下也可用；客户端断开（stdin EOF）→ 事件循环结束 → `runner.cleanup()` 退出进程、释放端口
+- 端口被占用（已有 broker 在跑）时打印明确提示并 `exit 1`，避免两个实体的注册表各管一半；此时应让客户端直接连 `POST /mcp`
+- README 的「MCP 接入」补充 stdio 配置示例与注意事项（绝对路径、.venv、勿用 `start-broker.bat` 配 stdio）
+- `py_compile` 通过；实测 stdio 下 `initialize` / `tools/list` 正常、同进程 `/pages` 可访问、关闭 stdin 后进程退出且端口释放
+
+## 2026-10-28 · broker.py 兼做 MCP 服务器（同进程同端口，无需第二个服务）
+
+- `POST /mcp`：MCP Streamable HTTP 传输，无状态实现（不下发 `Mcp-Session-Id`）——支持 `initialize` / `ping` / `tools/list` / `tools/call`；通知类消息（`notifications/initialized` 等）回 202，批量请求按数组逐个处理；`GET /mcp` 按规范返回 405、`DELETE /mcp` 返回 200
+- `GET /sse` + `POST /messages`：旧版 HTTP+SSE 传输——`endpoint` 事件给出带 `sessionId` 的提交地址（开了 token 时一并带上 `token`），响应经 SSE `message` 事件回传，15s `: ping` 心跳
+- 新增 4 个 MCP 工具：`list_pages`（复用 `public()`）、`list_marks`（抽出 `marks_list()`，`GET /marks` 同步复用，消除重复逻辑）、`page_snapshot`、`page_call`（`action` 必填，其余参数原样透传；`page` 支持标记 id / pid，只有一个在线页面时可省略，超时上限 120s，与 `/call` 同一条转发链路）
+- 不新增依赖（仍只依赖 aiohttp），鉴权沿用 `BRIDGE_TOKEN` 的 `?token=` / `X-Bridge-Token`
+- README 增加「MCP 接入」小节与接口表两行；`py_compile` 通过，实测三条链路：Streamable HTTP 的 initialize / tools/list / tools/call、SSE 的 endpoint → POST → SSE 回包、工具 → 长轮询页面 → 结果回传
+
+## 2026-10-28 · 「复制页桥标记」新增「MCP 提示页面」按钮
+
+- `marker` 的按钮行在「复制标记 id」旁追加「MCP 提示页面」：一键复制页面交接提示词，含标记 id / 标题 / 网址，并说明「优先按标记 id 选中该页面（不支持时按网址匹配）、先读取一次页面快照确认是同一页面」
+- 提示词面向**通用 MCP 浏览器工具**，不写死 broker 接口（`/mark` 等仍保留在下方代码块里供 curl 使用）
+- 仅在页面已接入扩展桥、能取到标记 id 时出现；`chrome-extension/toolbox/feats/llm.js` 与原型 `docs/toolbox/feats/llm.js` 同步，`node --check` 通过
+
+## 2026-10-28 · 接口列表 URL 拆解高亮（尾段 / 查询参数 / 锚点 tag）
+
+- 「接口调用」列表与详情里的 URL 拆成「前缀 + tag」：最后一个 `/` 之后的路径尾段、`?` 后每个参数（按 `&` 拆）、`#` 后的锚点分别渲染成小标签；`?` 与 `#` 作为普通分隔字符保留在标签之外（灰蓝等宽 9.5px，不带底色），避免看不出分隔符
+- tag 用低对比样式（9.5px 等宽、淡底、灰蓝字），查询参数用淡紫、锚点更淡，不抢状态码与时间的视觉；完整 URL 仍保留在 `title` 里可悬停查看
+- 列表行内前缀 `flex:0 1 auto` 超宽省略，tag `flex:none` 自动换行、最多两行（`max-height:2.6em`），长 URL 不再把参数挤成 `u…`；详情弹窗 664px 宽下 tag 正常换行完整显示
+- `core.js`（扩展 + 原型）新增 `.uh` / `.tg` 样式；`feats/capture.js` 抽出 `urlTags()` 供列表与详情共用；`node --check` 通过，本地视觉验证覆盖无参数 / 多参数 / 锚点 / 超长 URL 四种形态
+
 ## 2026-10-28 · 接口调用去掉静态资源；三级详情弹窗加宽到两倍
 
 - **问题**：「接口调用」列表里混进图片地址——bg 侧 webRequest 把所有 http(s) 请求都记成「仅头」记录，`image` / `css` / `js` / `font` 等静态资源也在内
-- **修复**：`background.js` 的 `onBeforeRequest` 增加 `webRequest.type` 白名单 `{xmlhttprequest, other, websocket, ping}`（fetch/XHR、beacon、WebSocket 握手），静态资源不再入库；`capture-main.js` 的 `sync()` 对旧版本遗留的静态资源「仅头」记录（URL 为图片/CSS/JS/字体等后缀且无请求体）直接丢弃
+- **修复**：`background.js` 的 `onBeforeRequest` 增加 `webRequest.type` 白名单 `{xmlhttprequest, other, websocket, ping, main_frame, sub_frame}`（fetch/XHR、beacon、WebSocket 握手、当前页面与 iframe 的文档请求），静态资源不再入库；`capture-main.js` 的 `sync()` 对旧版本遗留的静态资源「仅头」记录（URL 为图片/CSS/JS/字体等后缀且无请求体）直接丢弃
 - **弹窗加宽**：`ui.js` 的三级详情浮层宽度从固定 332px 改为自适应——目标 664px（列表宽两倍），按左右可用空间 `clamp(332, 664)` 收窄，仍保持「先左后右、顶边对齐、不重叠」的并排逻辑；列表不变
 - **地址不被截断**：详情里请求/响应头的行原本继承 `.li .u` 的 `nowrap + ellipsis`，改为 `white-space:normal` 换行显示；URL 继续 `word-break:break-all`
 - `docs/spec-net-protocol.md` 补充采集范围说明；`node --check` 通过（background.js / capture-main.js / ui.js / capture.js）；原型与扩展的 `ui.js` 同步，实测 1440px 视口下详情宽 664px、与列表间隔 10px、顶边对齐；929px 视口自适应收窄到可用宽度

@@ -207,6 +207,15 @@ pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-ra
 .li .m{font:10px ui-monospace,monospace;color:#a5b4fc;background:rgba(99,102,241,.14);border-radius:5px;padding:1px 6px;flex:none}
 .li .u{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;font-size:10.5px}
 .li .c{flex:none;font-size:10px}
+/* URL 拆解 tag：尾段 / 查询参数 / 锚点用低对比小标签，前缀超宽省略 */
+.li .u.uh{display:flex;flex-wrap:wrap;align-items:center;gap:3px 4px;overflow:hidden;max-height:2.6em;white-space:normal}
+.li .u.uh>.p{flex:0 1 auto;min-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tg{display:inline-block;font:9.5px ui-monospace,monospace;line-height:1.6;padding:0 4px;border-radius:4px;background:rgba(148,163,184,.10);color:#8494a8;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.li .u.uh>.tg{flex:none;max-width:100%}
+.tg.q{background:rgba(99,102,241,.10);color:#8f9ddc}
+.tg.h{background:rgba(148,163,184,.07);color:#64748b}
+.tgline .tg{margin:0 3px 2px 0}
+.sep{flex:none;color:#64748b;font:9.5px ui-monospace,monospace;line-height:1.6}
 .fld{display:flex;gap:6px;margin:6px 0}
 .fld input{flex:1;background:rgba(2,6,23,.5);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:5px 9px;color:#e5e7eb;font-size:11.5px;outline:none}
 .fld input:focus{border-color:#6366f1}

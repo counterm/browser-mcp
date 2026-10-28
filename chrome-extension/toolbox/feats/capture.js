@@ -351,6 +351,32 @@ B.register([
     var stCls = function(s){ return s === 200 ? 'g' : s === 'ERR' ? 'r' : 'y'; };
     var SRC_LBL = { page: '页面', merged: '合并', net: '仅头' };
 
+    /* URL 拆成「前缀 / 尾段 / ?参数 / #锚点」：尾段与参数用低对比 tag，前缀超宽时省略 */
+    function urlTags(u){
+      u = String(u || '');
+      var base = u, q = '', hash = '', hadQ = false, hadH = false;
+      var hi = base.indexOf('#');
+      if(hi > -1){ hadH = true; hash = base.slice(hi + 1); base = base.slice(0, hi); }
+      var qi = base.indexOf('?');
+      if(qi > -1){ hadQ = true; q = base.slice(qi + 1); base = base.slice(0, qi); }
+      var cut = base.lastIndexOf('/') + 1;
+      var tail = base.slice(cut);
+      if(tail) base = base.slice(0, cut);
+      var out = '<span class="p">' + esc(base) + '</span>';
+      if(tail) out += '<span class="tg">' + esc(tail) + '</span>';
+      if(hadQ){
+        out += '<span class="sep">?</span>';
+        (q ? q.split('&') : []).forEach(function(kv){
+          if(kv) out += '<span class="tg q">' + esc(kv) + '</span>';
+        });
+      }
+      if(hadH){
+        out += '<span class="sep">#</span>';
+        if(hash) out += '<span class="tg h">' + esc(hash) + '</span>';
+      }
+      return out;
+    }
+
     function render(){
       d.innerHTML = '';
       var recs = N.recs.slice().reverse();
@@ -360,7 +386,7 @@ B.register([
       }
       recs.forEach(function(r){
         var li = el('div', 'li',
-          '<span class="m">' + esc(r.m) + '</span><span class="u" title="' + esc(r.u) + '">' + esc(r.u) + '</span>' +
+          '<span class="m">' + esc(r.m) + '</span><span class="u uh" title="' + esc(r.u) + '">' + urlTags(r.u) + '</span>' +
           '<span class="c"><span class="bdg ' + stCls(r.s) + '">' + esc(r.s == null ? '…' : String(r.s)) + '</span>' +
           (r.src !== 'page' ? ' <span style="color:#475569">' + SRC_LBL[r.src] + '</span>' : '') +
           (r.pending ? ' <span style="color:#475569">读体中</span>' : '') +
@@ -393,7 +419,7 @@ B.register([
       var srcLbl = SRC_LBL[r.src] || r.src;
       d.appendChild(kv([
         ['方法', esc(r.m)],
-        ['URL', '<span style="word-break:break-all">' + esc(r.u) + '</span>'],
+        ['URL', '<span class="tgline" style="word-break:break-all">' + urlTags(r.u) + '</span>'],
         ['状态', esc(r.s == null ? '…' : String(r.s)) + (r.ms != null ? ' · ' + r.ms + 'ms' : '') + ' · ' + esc(srcLbl)],
         ['时间', timeStr(r.t)]
       ]));
