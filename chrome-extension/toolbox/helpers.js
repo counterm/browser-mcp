@@ -1,7 +1,7 @@
 /* 工具箱 · helpers —— 网络拦截（接口清单数据源）+ 通用实现（技术栈/脱敏/精简 DOM 等）。 */
 (function(B){
 if(!B || B.NET) return; // 防重复注入（重复执行会二次包裹 fetch）
-var $$ = B.u.$$;
+var $$ = B.u.$$, t = B.t;
 
 /* ---------- 网络拦截（接口清单） ---------- */
 var NET = B.NET = [];
@@ -135,7 +135,7 @@ B.pugDom = function(root, opts){
     }
   }
   emit(root, 0);
-  if(truncated) lines.push('…（已截断：节点 ' + nodes + '，字符 ' + chars + '）');
+  if(truncated) lines.push(t('…（已截断：节点 ' + nodes + '，字符 ' + chars + '）', '… (truncated: ' + nodes + ' nodes, ' + chars + ' chars)'));
   var content = lines.join('\n');
   return { content: content, nodes: nodes, chars: content.length, truncated: truncated };
 };

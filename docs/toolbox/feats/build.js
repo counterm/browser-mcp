@@ -3,10 +3,11 @@
 var el = B.u.el, esc = B.u.esc;
 var note = B.w.note, codeBox = B.w.codeBox, scoreBadge = B.w.scoreBadge, btn = B.w.btn, toast = B.w.toast, copyText = B.u.copyText, $$ = B.u.$$;
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
-var ensurePicked = B.ensurePicked;
+var ensurePicked = B.ensurePicked, t = B.t;
 
 B.register([
 { id:'pwcode', cat:'build', name:'生成 Playwright 代码', icon:'filecode', star:3, desc:'直接产出可运行定位 / 操作片段',
+  en:{ name:'Playwright Code Generator', desc:'Instantly produce runnable locator / action snippets' },
   run:function(b){
     ensurePicked().then(function(e){
       if(!e) return;
@@ -14,35 +15,37 @@ B.register([
       var code =
 '// Playwright\n' +
 "const btn = page.locator('" + sel + "');\nawait btn.click();\n\n" +
-'// 或按角色定位（更稳）\n' +
+t('// 或按角色定位（更稳）\n', '// Or locate by role (more robust)\n') +
 "await page.getByRole('button', { name: '" + (e.textContent || '').trim().slice(0, 20) + "' }).click();\n\n" +
 '// Puppeteer\n' +
 "const el = await page.waitForSelector('" + sel + "');\nawait el.click();\n\n" +
-'// XPath 兜底\n' +
+t('// XPath 兜底\n', '// XPath fallback\n') +
 "page.locator('xpath=" + xp + "')";
       b.appendChild(codeBox(code));
-      b.appendChild(el('div', null, '稳定性：' + scoreBadge(scoreSelector(sel))));
+      b.appendChild(el('div', null, t('稳定性：', 'Stability: ') + scoreBadge(scoreSelector(sel))));
     });
   }},
 { id:'userscript', cat:'build', name:'生成油猴脚本骨架', icon:'filecode', star:3, desc:'@match 填当前域名 + 稳定 selector',
+  en:{ name:'Tampermonkey Script Skeleton', desc:'@match for the current domain + a stable selector' },
   run:function(b){
     ensurePicked().then(function(e){
       if(!e) return;
       var host2 = location.hostname || 'example.com';
       var code =
 '// ==UserScript==\n' +
-'// @name         工具箱助手 · ' + host2 + '\n' +
+t('// @name         工具箱助手 · ' + host2, '// @name         Toolbox Helper · ' + host2) + '\n' +
 '// @match        https://' + host2 + '/*\n' +
 '// @grant        none\n' +
 '// ==/UserScript==\n' +
 "(function () {\n  'use strict';\n  const SEL = '" + bestSelector(e) + "';\n" +
-'  // 1. 等元素出现\n' +
+t('  // 1. 等元素出现\n', '  // 1. Wait for the element to appear\n') +
 "  const el = document.querySelector(SEL);\n  if (!el) return;\n" +
-'  // 2. 你的逻辑\n})();';
+t('  // 2. 你的逻辑\n', '  // 2. Your logic here\n') + '})();';
       b.appendChild(codeBox(code));
     });
   }},
 { id:'crawler', cat:'build', name:'爬虫代码生成', icon:'code', star:2, desc:'表格 / 列表 → Python 提取脚本（自动识别 SPA）',
+  en:{ name:'Scraper Code Generator', desc:'Table / list → Python extraction script (auto-detects SPAs)' },
   run:function(b){
     var tb = document.getElementById('orders');
     var sel = tb ? bestSelector(tb) : 'table';
@@ -56,7 +59,7 @@ B.register([
 "for tr in soup.select('" + sel + " tbody tr'):\n" +
 "    cells = [td.get_text(strip=True) for td in tr.find_all('td')]\n" +
 '    if cells:\n        rows.append(cells)\n\n' +
-'print(rows)  # 或 csv.writer 落盘';
+t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with csv.writer');
     b.appendChild(codeBox(code));
 
     var stack = (B.detectStack && B.detectStack()) || {};
@@ -75,24 +78,33 @@ B.register([
 '        if cells: rows.append(cells)\n' +
 '    b.close()\n' +
 'print(rows)';
-      b.appendChild(el('div', 'grp-h', '客户端渲染（' + fw.join('/') + '）· 推荐 Playwright'));
+      b.appendChild(el('div', 'grp-h', t('客户端渲染（' + fw.join('/') + '）· 推荐 Playwright', 'Client-side rendered (' + fw.join('/') + ') · Playwright recommended')));
       b.appendChild(codeBox(pw));
-      b.appendChild(note('检测到 ' + fw.join('/') + '：页面为客户端渲染，requests 拉到的 HTML 是空壳、抓不到表格数据。上面这份 Playwright 脚本会真正执行 JS 后再读 DOM，才能取到渲染后的内容。'));
+      b.appendChild(note(t('检测到 ' + fw.join('/') + '：页面为客户端渲染，requests 拉到的 HTML 是空壳、抓不到表格数据。上面这份 Playwright 脚本会真正执行 JS 后再读 DOM，才能取到渲染后的内容。',
+        'Detected ' + fw.join('/') + ': the page is client-side rendered, so requests only fetches an empty shell and cannot read the table data. The Playwright script above actually executes JS before reading the DOM, so it can capture the rendered content.')));
     } else {
-      b.appendChild(note('选择器由页面表格自动推导；接入真实站点后可按「元素拾取器」的结果替换。'));
+      b.appendChild(note(t('选择器由页面表格自动推导；接入真实站点后可按「元素拾取器」的结果替换。',
+        'The selector is derived automatically from the page table; on a real site, replace it with the Element Picker result.')));
     }
   }},
 { id:'record', cat:'build', name:'操作录制 → 步骤', icon:'clock', star:2, desc:'记录点击序列，导出可重放步骤', mock:true,
+  en:{ name:'Record Actions → Steps', desc:'Record click sequences and export replayable steps' },
   run:function(b){
-    b.appendChild(el('div', 'd', '录制 3 步后的导出效果：'));
-    b.appendChild(codeBox(
+    b.appendChild(el('div', 'd', t('录制 3 步后的导出效果：', 'Export preview after recording 3 steps:')));
+    b.appendChild(codeBox(t(
 '第一步：点击「导出订单」按钮（[data-reactroot] .hero .btn.pri）\n' +
 '第二步：在「客户姓名」输入框填写「张伟」\n' +
 '第三步：点击「打开弹窗」按钮，等待弹窗出现\n\n' +
-'// 可导出为 cli_client.py 的重放脚本'));
-    b.appendChild(note('录制依赖 content script 事件钩子，原型中以演示数据展示交互形态。'));
+'// 可导出为 cli_client.py 的重放脚本',
+'Step 1: click the "Export Orders" button ([data-reactroot] .hero .btn.pri)\n' +
+'Step 2: enter "Zhang Wei" in the "Customer Name" input\n' +
+'Step 3: click the "Open Dialog" button and wait for the dialog to appear\n\n' +
+'// Exportable as a replay script for cli_client.py')));
+    b.appendChild(note(t('录制依赖 content script 事件钩子，原型中以演示数据展示交互形态。',
+      'Recording relies on content-script event hooks; the prototype uses demo data to show the interaction.')));
   }},
 { id:'formkit', cat:'build', name:'表单保存与填充', icon:'save', star:3, desc:'按站点保存/回填表单值；随机假数据一键填充',
+  en:{ name:'Save & Fill Forms', desc:'Save / restore form values per site; one-click random mock data' },
   run:function(b){
     /* ---------- 存储：localStorage['ba:formkit'] = { [host]: {ts, fields:[{s,l,t,v}]} } ---------- */
     var HOST = location.hostname || ('file:' + (location.pathname || '/'));
@@ -113,7 +125,7 @@ B.register([
     function label(e){
       var lg = e.labels && e.labels[0];
       return (lg && lg.textContent.trim()) || e.placeholder || e.getAttribute('aria-label') || e.name || e.id ||
-        (e.tagName === 'SELECT' ? '下拉框' : kind(e));
+        (e.tagName === 'SELECT' ? t('下拉框', 'Dropdown') : kind(e));
     }
     /* 原生 setter + input/change，兼容 React/Vue 受控组件 */
     function setVal(e, v){
@@ -192,14 +204,16 @@ B.register([
       var rec = load()[HOST];
       var n = rec && rec.fields ? rec.fields.length : 0;
       status.innerHTML = n
-        ? '当前站点已保存 <b style="color:#cbd5e1">' + n + '</b> 个字段 · ' + new Date(rec.ts).toLocaleTimeString()
-        : '当前站点还没有保存的表单：先在页面上手填一遍 → 「保存表单」，下次即可一键回填。';
+        ? t('当前站点已保存 <b style="color:#cbd5e1">' + n + '</b> 个字段 · ' + new Date(rec.ts).toLocaleTimeString(),
+            '<b style="color:#cbd5e1">' + n + '</b> fields saved for this site · ' + new Date(rec.ts).toLocaleTimeString())
+        : t('当前站点还没有保存的表单：先在页面上手填一遍 → 「保存表单」，下次即可一键回填。',
+            'No saved form for this site yet: fill the page once → "Save Form", then restore it in one click next time.');
     }
     function undoable(prev){
       B.ui.pushUndo({ restore:function(){ prev.forEach(function(p){ try{ setVal(p[0], p[1]); }catch(x){} }); } });
     }
     /* 「填充已保存」与「粘贴」共用同一套匹配逻辑：先按选择器，结构变了按顺序兜底 */
-    function applyFields(list, prefix){
+    function applyFields(list, prefix, prefixEn){
       var cur = fields(), prev = [], rows = [], miss = 0;
       list.forEach(function(f, i){
         var e = null;
@@ -214,9 +228,10 @@ B.register([
         setVal(e, e.tagName === 'SELECT' ? hit.value : f.v);
         rows.push([kind(e), label(e), e.value]);
       });
-      if(!rows.length){ toast('没找到匹配的表单字段（页面结构可能变了）'); return 0; }
+      if(!rows.length){ toast(t('没找到匹配的表单字段（页面结构可能变了）', 'No matching form fields found (the page structure may have changed)')); return 0; }
       undoable(prev);
-      showRows(prefix + rows.length + ' 个字段' + (miss ? ' · ' + miss + ' 个未匹配' : ''), rows);
+      showRows(t(prefix + rows.length + ' 个字段' + (miss ? ' · ' + miss + ' 个未匹配' : ''),
+        prefixEn + rows.length + ' fields' + (miss ? ' · ' + miss + ' unmatched' : '')), rows);
       return rows.length;
     }
     /* 导入：剪贴板 JSON 兼容三种形态（本站导出、全部站点备份、纯字段数组） */
@@ -235,12 +250,12 @@ B.register([
       return manualPaste();
     }
     function manualPaste(){
-      var t = window.prompt('无法读取剪贴板，请把表单 JSON 粘贴到这里：', '');
-      return Promise.resolve(t || '');
+      var v = window.prompt(t('无法读取剪贴板，请把表单 JSON 粘贴到这里：', 'Unable to read the clipboard — paste the form JSON here:'), '');
+      return Promise.resolve(v || '');
     }
 
     var row = el('div', 'row2');
-    row.appendChild(btn('保存表单', function(){
+    row.appendChild(btn(t('保存表单', 'Save Form'), function(){
       var rows = [], pwd = 0;
       fields().forEach(function(e){
         if(e.tagName === 'INPUT' && e.type === 'password'){ if(e.value) pwd++; return; } /* 密码不入库 */
@@ -249,36 +264,37 @@ B.register([
         var s = ''; try{ s = bestSelector(e); }catch(x){}
         rows.push({ s:s, l:label(e), t:kind(e), v:v });
       });
-      if(!rows.length){ toast('没有已填写的字段可保存'); return; }
+      if(!rows.length){ toast(t('没有已填写的字段可保存', 'No filled fields to save')); return; }
       var all = load();
       all[HOST] = { ts: Date.now(), fields: rows };
       store(all);
-      showRows('已保存 ' + rows.length + ' 个字段', rows.map(function(r){ return [r.t, r.l, r.v]; }));
+      showRows(t('已保存 ' + rows.length + ' 个字段', 'Saved ' + rows.length + ' fields'), rows.map(function(r){ return [r.t, r.l, r.v]; }));
       refresh();
-      toast('已保存 ' + rows.length + ' 个字段' + (pwd ? '（密码字段出于安全已跳过）' : ''));
+      toast(t('已保存 ' + rows.length + ' 个字段' + (pwd ? '（密码字段出于安全已跳过）' : ''),
+        'Saved ' + rows.length + ' fields' + (pwd ? ' (password fields skipped for security)' : '')));
     }));
-    row.appendChild(btn('填充已保存', function(){
+    row.appendChild(btn(t('填充已保存', 'Fill Saved'), function(){
       var rec = load()[HOST];
-      if(!rec || !rec.fields || !rec.fields.length){ toast('当前站点还没有保存的表单，先「保存表单」'); return; }
-      var n = applyFields(rec.fields, '已回填 ');
-      if(n) toast('已回填 ' + n + ' 个字段');
+      if(!rec || !rec.fields || !rec.fields.length){ toast(t('当前站点还没有保存的表单，先「保存表单」', 'No saved form for this site yet — use "Save Form" first')); return; }
+      var n = applyFields(rec.fields, '已回填 ', 'Filled ');
+      if(n) toast(t('已回填 ' + n + ' 个字段', 'Filled ' + n + ' fields'));
     }));
-    row.appendChild(btn('复制', function(){
+    row.appendChild(btn(t('复制', 'Copy'), function(){
       var rec = load()[HOST];
-      if(!rec || !rec.fields || !rec.fields.length){ toast('当前站点还没有保存的表单，先「保存表单」'); return; }
+      if(!rec || !rec.fields || !rec.fields.length){ toast(t('当前站点还没有保存的表单，先「保存表单」', 'No saved form for this site yet — use "Save Form" first')); return; }
       var text = JSON.stringify({ _v:1, host:HOST, ts:rec.ts, fields:rec.fields });
-      copyText(text).then(function(){ toast('已导出 ' + rec.fields.length + ' 个字段，可到其它页面「粘贴」'); },
-        function(){ window.prompt('复制失败，请手动复制以下内容：', text); });
+      copyText(text).then(function(){ toast(t('已导出 ' + rec.fields.length + ' 个字段，可到其它页面「粘贴」', 'Exported ' + rec.fields.length + ' fields — paste them on another page')); },
+        function(){ window.prompt(t('复制失败，请手动复制以下内容：', 'Copy failed — please copy the following manually:'), text); });
     }));
-    row.appendChild(btn('粘贴', function(){
+    row.appendChild(btn(t('粘贴', 'Paste'), function(){
       readClip().then(function(text){
         var list = unpack(text);
-        if(!list || !list.length){ toast('剪贴板里没有可用的表单 JSON'); return; }
-        var n = applyFields(list, '已粘贴填充 ');
-        if(n) toast('已粘贴填充 ' + n + ' 个字段，误填可撤销');
+        if(!list || !list.length){ toast(t('剪贴板里没有可用的表单 JSON', 'No usable form JSON in the clipboard')); return; }
+        var n = applyFields(list, '已粘贴填充 ', 'Pasted and filled ');
+        if(n) toast(t('已粘贴填充 ' + n + ' 个字段，误填可撤销', 'Pasted and filled ' + n + ' fields — undo available'));
       });
     }));
-    row.appendChild(btn('随机填充', function(){
+    row.appendChild(btn(t('随机填充', 'Random Fill'), function(){
       var fs = fields(), prev = [], rows = [];
       fs.forEach(function(e){
         var old = e.value, ok;
@@ -288,20 +304,21 @@ B.register([
         prev.push([e, old]);
         rows.push([kind(e), label(e), e.value]);
       });
-      if(!rows.length){ toast('没有可填充的表单字段'); return; }
+      if(!rows.length){ toast(t('没有可填充的表单字段', 'No fillable form fields')); return; }
       undoable(prev);
-      showRows('随机填充 ' + rows.length + ' 个字段', rows);
-      toast('已随机填充 ' + rows.length + ' 个字段，误填可撤销');
+      showRows(t('随机填充 ' + rows.length + ' 个字段', 'Random-filled ' + rows.length + ' fields'), rows);
+      toast(t('已随机填充 ' + rows.length + ' 个字段，误填可撤销', 'Random-filled ' + rows.length + ' fields — undo available'));
     }, 'pri'));
-    row.appendChild(btn('清除', function(){
+    row.appendChild(btn(t('清除', 'Clear'), function(){
       var all = load(); delete all[HOST]; store(all);
-      refresh(); toast('已清除当前站点保存的表单');
+      refresh(); toast(t('已清除当前站点保存的表单', 'Cleared the saved form for this site'));
     }, 'warn'));
     b.appendChild(row);
     b.appendChild(status);
     b.appendChild(out);
     refresh();
-    b.appendChild(note('随机填充按 name / placeholder / label / autocomplete 猜语义：邮箱 / 手机号 / 邮编 / 验证码 / 身份证给格式化假数据，姓名给中文随机名，省市地址给地区名，下拉框随机选非占位项，其余填随机字母；尊重 maxlength。保存按站点存于 localStorage["ba:formkit"]，密码字段跳过。填充走原生 setter + input/change 事件（兼容 React / Vue），误填可从撤销条恢复。「复制」把本站已保存表单导出为 JSON 到剪贴板，「粘贴」把剪贴板里的 JSON 直接填进当前页面（与「填充已保存」同一套匹配逻辑，跨站点按顺序兜底）。'));
+    b.appendChild(note(t('随机填充按 name / placeholder / label / autocomplete 猜语义：邮箱 / 手机号 / 邮编 / 验证码 / 身份证给格式化假数据，姓名给中文随机名，省市地址给地区名，下拉框随机选非占位项，其余填随机字母；尊重 maxlength。保存按站点存于 localStorage["ba:formkit"]，密码字段跳过。填充走原生 setter + input/change 事件（兼容 React / Vue），误填可从撤销条恢复。「复制」把本站已保存表单导出为 JSON 到剪贴板，「粘贴」把剪贴板里的 JSON 直接填进当前页面（与「填充已保存」同一套匹配逻辑，跨站点按顺序兜底）。',
+      'Random fill guesses field semantics from name / placeholder / label / autocomplete: email / phone / postal code / captcha / ID get formatted fake data, names get a random Chinese name, province/city addresses get a region name, selects pick a random non-placeholder option, and everything else gets random letters; maxlength is respected. Saved per site in localStorage["ba:formkit"]; password fields are skipped. Filling uses the native setter with input/change events (React / Vue compatible), and mis-fills can be reverted from the undo bar. "Copy" exports the saved form for this site as JSON to the clipboard; "Paste" fills clipboard JSON into the current page (same matching logic as "Fill Saved", with order-based fallback across sites).')));
   }}
 ]);
 })(window.BATB);

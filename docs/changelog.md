@@ -2,6 +2,22 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-28 · 工具箱中英双语 + README 英文镜像
+
+- 工具箱新增语言层：`core.js` 提供 `B.t(中文, 英文)` / `B.lang` / `B.setLang()` / `B.toggleLang()` / `B.onLang()`，默认中文，选择存 `localStorage["ba:tbx-lang"]`，刷新后保持
+- 面板底部新增「EN / 中文」一键切换按钮（原「关于」链接右侧）；`ui.js` 新增 `applyLang()`，重绘分类面板（含计数）、Popover 列表、关于页、撤销条，切换时收起三级详情避免中英混排
+- 分类与全部功能对象补 `en:{ name, desc }`；所有界面文案统一 `t('中文','English')`——分类名/描述、功能名/描述、结果卡片标签、按钮、toast、note、placeholder、生成代码注释、复制到剪贴板的 prompt（含 MCP 交接提示词）、空状态与错误提示
+- 各功能模块补 `t = B.t` 别名；`find.js` 内局部变量 `t`（tabs 按钮）与 `llm.js` 的 a11y 循环参数改名，避免遮蔽
+- `boot.js` 拆出 `bindHeader()` / `bindCats()`，新增 `B.rebindLang()`：切换语言只重绑被重绘的头部与分类按钮，**不重跑** `B.rebind()`，避免 FAB / Popover 重复叠加监听
+- README 顶部加 `简体中文 ｜ English` 语言导航，正文保持中文为主，文末新增完整英文镜像（`## English`）；工具箱章节补充双语说明
+- `docs/toolbox-proto-map.md` 新增「中英双语（i18n）」约定章节并更新 core/ui/boot 模块导出说明
+- 原型 `docs/toolbox/` 与扩展 `chrome-extension/toolbox/` 两套同步修改；`node --check` 全部通过（28 个 JS）；扩展侧需重载扩展并刷新页面后生效
+
+## 2026-10-28 · 版本号提升至 0.1.15
+
+- `chrome-extension/manifest.json` 0.1.2→0.1.15，`page-bridge.user.js` `@version` 0.1.0→0.1.15（两侧同步），README 首屏标注当前版本
+- 扩展侧需在 `chrome://extensions` 重新加载；油猴侧需在脚本管理器里更新脚本后生效
+
 ## 2026-10-28 · 新增页面日志/异常捕获与 MCP `page_logs`
 
 - `capture-main.js` 新增 MAIN world 日志层 `window.__BATB_LOG__`（`document_start` 先于页面脚本）：hook `console.log/info/warn/error/debug`、`window.error`（含捕获阶段的资源加载失败）、`unhandledrejection`、`securitypolicyviolation`；记录 `id/t/iso/perf/kind/level/text/url/line/col/stack/count`，环形 800 条、单条 2KB、1.5s 内同文本合并计数，序列化有深度 / 键数 / 字符上限，hook 全程 try/catch

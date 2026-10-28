@@ -40,6 +40,20 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 
 能跑起来的脚本 / 指令（Playwright、油猴、爬虫、录制步骤）归入独立的 **开发产物 build** 分类。
 
+## 中英双语（i18n）
+
+默认中文，面板底部「EN / 中文」一键切换，偏好存 `localStorage["ba:tbx-lang"]`（`en` / 缺省为中文）。
+
+| 位置 | 约定 |
+|---|---|
+| `core.js` | `B.t(中文, 英文)` 取当前语言；`B.setLang()` / `B.toggleLang()` 切换并持久化；`B.onLang(fn)` 注册重绘回调 |
+| `cats.js` | 分类补 `en:{ name, desc }`；子组补 `en:{ name }` |
+| `feats/*.js` | 功能对象补 `en:{ name, desc }`；界面文案一律 `t('中文','English')`，动态值写成 `t('中文 ' + x, 'English ' + x)` |
+| `ui.js` | `B.ui.applyLang()` 重绘面板（含分类计数）、列表、关于页、撤销条，并收起三级详情（详情内容由功能脚本按当时语言生成） |
+| `boot.js` | `B.rebindLang()` 只重绑被重绘的头部按钮与分类按钮；**不要**在语言切换时调 `B.rebind()`，否则 FAB / Popover 会重复叠加监听 |
+
+新增功能时中文为主语言（`t()` 第一参数），英文放第二参数且不得夹中文；代码注释保持中文。
+
 ## 一、演示页（toolbox-proto.html + demo.css + demo.js）
 
 | 位置 | 区块 | 说明 |
@@ -60,13 +74,13 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 
 | 模块 | 行数 | 职责 | 导出 |
 |---|---|---|---|
-| [core.js](toolbox/core.js) | ~242 | 命名空间、基础工具、图标、状态与 `#ba-toolbox-host` 挂载 + 宿主自愈（文档被整块重写后自动挂回）、Shadow 样式 `WCSS`、页面注入样式、功能注册器。**必须最先加载** | `B.u` `$/$$/el/esc/clamp/copyText/sq/sqa`、`B.I/B.ICONS`、`B.state`、`B.host/B.shadow`、`B.style` pageStyle+STYLE、`B.register` |
+| [core.js](toolbox/core.js) | ~252 | 命名空间、基础工具、图标、语言切换（`B.t` / `B.setLang`）、状态与 `#ba-toolbox-host` 挂载 + 宿主自愈（文档被整块重写后自动挂回）、Shadow 样式 `WCSS`、页面注入样式、功能注册器。**必须最先加载** | `B.u` `$/$$/el/esc/clamp/copyText/sq/sqa`、`B.I/B.ICONS`、`B.t/B.lang/B.setLang/B.toggleLang/B.onLang`、`B.state`、`B.host/B.shadow`、`B.style` pageStyle+STYLE、`B.register` |
 | [cats.js](toolbox/cats.js) | ~15 | 分类定义：原型五分类（llm 带 copy/store 子组），扩展落地版另有 capture「采集」 | `B.CATS` |
 | [widgets.js](toolbox/widgets.js) | ~38 | 结果组件 + toast（自带 DOM） | `B.w` codeBox/kv/note/btn/badge/scoreBadge/toast |
-| [ui.js](toolbox/ui.js) | ~214 | FAB/面板/Popover/详情浮层（dpop）DOM、三层布局与联动、开合、列表渲染、详情生命周期、撤销栈、关于页；静态节点事件收在 `bindStatic()`（可重绑） | `B.ui`（fab/panel/pop/dpop、layout*、open/close 系列、renderList、pushUndo、bindStatic、detailTimer…） |
+| [ui.js](toolbox/ui.js) | ~225 | FAB/面板/Popover/详情浮层（dpop）DOM、三层布局与联动、开合、列表渲染、详情生命周期、撤销栈、关于页、语言切换重绘 `applyLang()`；静态节点事件收在 `bindStatic()`（可重绑） | `B.ui`（fab/panel/pop/dpop、layout*、open/close 系列、renderList、pushUndo、bindStatic、applyLang、detailTimer…） |
 | [picker.js](toolbox/picker.js) | ~94 | 选择器工具 + 元素拾取器 | `B.sel` cssPath/bestSelector/SCORE_RULES/scoreSelector/xpathOf、`B.pick`、`B.ensurePicked` |
 | [helpers.js](toolbox/helpers.js) | ~61 | fetch 拦截（接口清单数据源）+ 通用实现 | `B.NET`、`B.detectStack/B.REDACT/B.redact/B.skeleton/B.maxDepth/B.flashEl` |
-| [boot.js](toolbox/boot.js) | ~109 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起），绑定收在 `bindUi()` 并导出 `B.rebind`（文档被重写清空监听后由 core.js 调用来重绑）。**必须最后加载** | `B.rebind` |
+| [boot.js](toolbox/boot.js) | ~113 | 收尾：`FEATS_BY_ID` 索引、分类计数回填、全部事件绑定（FAB/分类/hover/拖拽吸边/位置记忆/热键/Esc 分级返回/外点收起），绑定收在 `bindUi()` 并导出 `B.rebind`（文档被重写清空监听后由 core.js 调用来重绑）与 `B.rebindLang`（仅重绑语言切换时重绘的头部/分类按钮）。**必须最后加载** | `B.rebind`、`B.rebindLang` |
 | [qr.js](../chrome-extension/toolbox/qr.js) | ~250 | 〔仅扩展版〕二维码生成：qrcode-generator 1.4.4（MIT）裁剪，Byte 模式 UTF-8 + 自动版本，canvas 自绘矩阵 | `B.QR` / `B.QR.make(text)` |
 | [feats/capture.js](../chrome-extension/toolbox/feats/capture.js) | ~420 | 〔仅扩展版〕「采集」分类：网址二维码 / 整页截图 / 容器截图（扩展桥逐屏 captureVisibleTab 拼接下载）/ 接口调用（读 `__BATB_NET__` + 扩展桥合并） | — |
 

@@ -1,28 +1,41 @@
 /* 工具箱 · ui —— 面板 / Popover / 详情浮层 DOM、布局、开合、列表与详情渲染、撤销栈、关于页。
-   三层结构：FAB → 分类面板 → hover Popover 列表 → 详情浮层（dpop，与列表并排错开）。 */
+   三层结构：FAB → 分类面板 → hover Popover 列表 → 详情浮层（dpop，与列表并排错开）。
+   文案：默认中文；分类 / 功能带 en 字段，界面字符串统一走 B.t(中文, 英文)。 */
 (function(B){
 if(!B || B.ui) return; // 防重复注入
-var $ = B.u.$, $$ = B.u.$$, sq = B.u.sq, sqa = B.u.sqa, el = B.u.el, esc = B.u.esc, clamp = B.u.clamp, I = B.I;
+var $ = B.u.$, $$ = B.u.$$, sq = B.u.sq, sqa = B.u.sqa, el = B.u.el, esc = B.u.esc, clamp = B.u.clamp, I = B.I, t = B.t;
 var state = B.state, shadow = B.shadow, CATS = B.CATS;
 var toast = B.w.toast, pageStyle = B.style.pageStyle;
 
+function cName(c){ return t(c.name, c.en && c.en.name); }
+function cDesc(c){ return t(c.desc, c.en && c.en.desc); }
+function gName(g){ return t(g.name, g.en && g.en.name); }
+function fName(f){ return t(f.name, f.en && f.en.name); }
+function fDesc(f){ return t(f.desc, f.en && f.en.desc); }
+
 /* ---------- DOM 构建 ---------- */
 var fab = el('div', 'fab');
-fab.setAttribute('role', 'button'); fab.setAttribute('tabindex', '0'); fab.setAttribute('aria-label', '打开工具箱');
+fab.setAttribute('role', 'button'); fab.setAttribute('tabindex', '0');
 fab.innerHTML = '<span class="ic">' + I('toolbox', 21) + '</span>';
 shadow.appendChild(fab);
+function paintFab(){ fab.setAttribute('aria-label', t('打开工具箱', 'Open toolbox')); }
 
 var panel = el('div', 'panel');
-panel.innerHTML =
-  '<div class="ph"><span class="pt">' + I('toolbox', 14) + ' 工具箱</span>' +
-  '<span class="chip" id="wl-chip">白名单 · ' + (location.hostname || 'example.com') + '</span>' +
-  '<button class="x" id="p-close" title="收起">' + I('close', 13) + '</button></div>' +
-  '<div class="cats">' + CATS.map(function(c){
-    return '<button class="cat" data-c="' + c.id + '" style="--c:' + c.color + '">' +
-      '<span class="ci">' + I(c.icon, 17) + '</span><b>' + c.name + '</b><i data-c="' + c.id + '">·</i></button>';
-  }).join('') + '</div>' +
-  '<div class="pf"><span><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 唤起</span>' +
-  '<button class="link" id="p-about">关于</button></div>';
+function paintPanel(){
+  panel.innerHTML =
+    '<div class="ph"><span class="pt">' + I('toolbox', 14) + ' ' + t('工具箱', 'Toolbox') + '</span>' +
+    '<span class="chip" id="wl-chip">' + t('白名单', 'Allowlist') + ' · ' + (location.hostname || 'example.com') + '</span>' +
+    '<button class="x" id="p-close" title="' + t('收起', 'Collapse') + '">' + I('close', 13) + '</button></div>' +
+    '<div class="cats">' + CATS.map(function(c){
+      return '<button class="cat" data-c="' + c.id + '" style="--c:' + c.color + '">' +
+        '<span class="ci">' + I(c.icon, 17) + '</span><b>' + cName(c) + '</b><i data-c="' + c.id + '">' + (B.countOf ? B.countOf(c.id) : '·') + '</i></button>';
+    }).join('') + '</div>' +
+    '<div class="pf"><span><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> ' + t('唤起', 'Toggle') + '</span>' +
+    '<button class="link lang" id="p-lang" title="' + t('切换到英文', 'Switch to Chinese') + '">' + t('EN', '中文') + '</button>' +
+    '<button class="link about" id="p-about">' + t('关于', 'About') + '</button></div>';
+}
+paintPanel();
+paintFab();
 shadow.appendChild(panel);
 
 var pop = el('div', 'pop');
@@ -35,18 +48,27 @@ shadow.appendChild(pop);
 var dpop = el('div', 'pop dpop');
 dpop.innerHTML =
   '<div class="ph2"><span class="t" id="dpop-title"></span><span class="s" id="dpop-sub"></span>' +
-  '<button class="x" id="dpop-x" title="关闭">' + I('close', 13) + '</button></div>' +
+  '<button class="x" id="dpop-x" title="' + t('关闭', 'Close') + '">' + I('close', 13) + '</button></div>' +
   '<div class="body" id="dpop-body"><div class="d" id="dpop-desc"></div><div id="dt-body"></div></div>';
 shadow.appendChild(dpop);
 
 var undoPill = el('div', 'pill-u');
-undoPill.innerHTML = '<span>已改动 <b id="undo-n">0</b> 处</span><button id="undo-one">' + I('undo', 11) + ' 撤销</button><button id="undo-all">全部恢复</button>';
+function paintUndoPill(n){
+  undoPill.innerHTML = '<span>' + t('已改动 <b id="undo-n">' + n + '</b> 处', 'Changed <b id="undo-n">' + n + '</b> items') + '</span>' +
+    '<button id="undo-one">' + I('undo', 11) + ' ' + t('撤销', 'Undo') + '</button><button id="undo-all">' + t('全部恢复', 'Restore all') + '</button>';
+}
+paintUndoPill(0);
 shadow.appendChild(undoPill);
 
 if(!localStorage.getItem('ba-tbx-seen')){
-  var coach = el('div', 'coach', '点我打开工具箱 · 可拖拽移位');
+  var coach = el('div', 'coach', t('点我打开工具箱 · 可拖拽移位', 'Click to open the toolbox · draggable'));
   fab.appendChild(coach);
   setTimeout(function(){ coach.classList.add('hide'); }, 6000);
+}
+/* 语言切换时重绘引导气泡文案（若仍在） */
+function paintCoach(){
+  var c = fab.querySelector('.coach');
+  if(c) c.textContent = t('点我打开工具箱 · 可拖拽移位', 'Click to open the toolbox · draggable');
 }
 
 /* ---------- 布局 ---------- */
@@ -98,7 +120,7 @@ function openPanel(){
   layout();
 }
 function closePanel(){
-  state.open = false; state.cat = null; state.feat = null; state.pin = false;
+  state.open = false; state.cat = null; state.feat = null; state.pin = false; state.about = false;
   panel.classList.remove('open'); fab.classList.remove('on');
   pop.classList.remove('open');
   dpop.classList.remove('open');
@@ -121,35 +143,37 @@ function openPop(catId, pin){
   clearTimeout(hoverTimer);
   closeDetail();
   state.cat = catId;
+  state.about = false;
   renderList(catId);
   pop.classList.add('open');
   state.pin = !!pin;
   layoutPop();
 }
-function closePop(){ pop.classList.remove('open'); closeDetail(); state.cat = null; state.pin = false; }
+function closePop(){ pop.classList.remove('open'); closeDetail(); state.cat = null; state.pin = false; state.about = false; }
 function scheduleClose(){ if(state.pin) return; clearTimeout(hoverTimer); hoverTimer = setTimeout(closePop, 240); }
 
 function featRows(items){
   var main = items.filter(function(f){ return !f.adv; });
   var adv  = items.filter(function(f){ return f.adv; });
   return main.map(featRow).join('') +
-    (adv.length ? '<div class="adv"><button class="adv-h">' + I('chevron', 11) + ' 高级功能（' + adv.length + '）</button><div class="adv-b">' + adv.map(featRow).join('') + '</div></div>' : '');
+    (adv.length ? '<div class="adv"><button class="adv-h">' + I('chevron', 11) + ' ' + t('高级功能（' + adv.length + '）', 'Advanced (' + adv.length + ')') + '</button><div class="adv-b">' + adv.map(featRow).join('') + '</div></div>' : '');
 }
 function featRow(f){
   return '<button class="feat" data-f="' + f.id + '"><span class="fi">' + I(f.icon, 14) + '</span>' +
-    '<span class="fm"><b>' + f.name + '</b><s>' + f.desc + '</s></span>' +
+    '<span class="fm"><b>' + fName(f) + '</b><s>' + fDesc(f) + '</s></span>' +
     '<span class="st' + (f.star < 3 ? ' dim' : '') + '">' + '★'.repeat(f.star) + '</span></button>';
 }
 function renderList(catId){
   var c = CATS.filter(function(x){ return x.id === catId; })[0];
-  sq('#pop-title').textContent = c.name;
-  sq('#pop-sub').textContent = c.desc;
+  if(!c) return;
+  sq('#pop-title').textContent = cName(c);
+  sq('#pop-sub').textContent = cDesc(c);
   var list = sq('#pop-list');
   var html;
   if(c.groups && c.groups.length){
     html = c.groups.map(function(g){
       var items = B.FEATS.filter(function(f){ return f.cat === catId && f.grp === g.id; });
-      return items.length ? '<div class="grp-h">' + esc(g.name) + '</div>' + featRows(items) : '';
+      return items.length ? '<div class="grp-h">' + esc(gName(g)) + '</div>' + featRows(items) : '';
     }).join('');
   } else {
     html = featRows(B.FEATS.filter(function(f){ return f.cat === catId; }));
@@ -172,16 +196,17 @@ function clearDetail(){
 function openDetail(f){
   clearDetail();
   state.feat = f;
+  state.about = false;
   state.pin = true;
-  sq('#dpop-title').textContent = f.name;
-  sq('#dpop-sub').textContent = f.mock ? '演示数据' : '';
-  sq('#dpop-desc').innerHTML = f.desc;
+  sq('#dpop-title').textContent = fName(f);
+  sq('#dpop-sub').textContent = f.mock ? t('演示数据', 'Demo data') : '';
+  sq('#dpop-desc').innerHTML = fDesc(f);
   var b = sq('#dpop-body');
   $('#dt-body', b).innerHTML = ''; /* 清空上一个功能的详情内容，避免切换时残留 */
   b.scrollTop = 0;
   dpop.classList.add('open');
   layoutDpop();
-  try{ Promise.resolve(f.run($('#dt-body', b))).catch(function(e){ toast('执行出错：' + e.message); }); }catch(e){ toast('执行出错：' + e.message); }
+  try{ Promise.resolve(f.run($('#dt-body', b))).catch(function(e){ toast(t('执行出错：', 'Execution error: ') + e.message); }); }catch(e){ toast(t('执行出错：', 'Execution error: ') + e.message); }
 }
 function closeDetail(){
   clearDetail();
@@ -191,29 +216,53 @@ function closeDetail(){
 /* ---------- 静态节点事件（可重跑：站点整块重写文档会清空全部监听，boot.js 的 bindUi 会调它） ---------- */
 function bindStatic(){
   sq('#dpop-x').onclick = closeDetail;
-  sq('#undo-one').onclick = function(){ var op = state.undo.pop(); if(op) op.restore(); refreshUndo(); toast('已撤销一步'); };
-  sq('#undo-all').onclick = function(){ while(state.undo.length) state.undo.pop().restore(); refreshUndo(); toast('已全部恢复'); };
+  sq('#undo-one').onclick = function(){ var op = state.undo.pop(); if(op) op.restore(); refreshUndo(); toast(t('已撤销一步', 'Undone one step')); };
+  sq('#undo-all').onclick = function(){ while(state.undo.length) state.undo.pop().restore(); refreshUndo(); toast(t('已全部恢复', 'All changes restored')); };
 }
 bindStatic();
 
 /* ---------- 撤销栈 ---------- */
 function pushUndo(op){ state.undo.push(op); refreshUndo(); }
-function refreshUndo(){ undoPill.classList.toggle('show', state.undo.length > 0); sq('#undo-n').textContent = state.undo.length; }
+function refreshUndo(){ undoPill.classList.toggle('show', state.undo.length > 0); var n = sq('#undo-n'); if(n) n.textContent = state.undo.length; }
 
 /* ---------- 关于 ---------- */
 function openAbout(){
   closeDetail();
-  state.cat = null; state.feat = null; state.pin = true;
-  sq('#pop-title').textContent = '关于工具箱';
-  sq('#pop-sub').textContent = 'Page Bridge · 页面工具箱';
+  state.cat = null; state.feat = null; state.pin = true; state.about = true;
+  sq('#pop-title').textContent = t('关于工具箱', 'About the toolbox');
+  sq('#pop-sub').textContent = t('Page Bridge · 页面工具箱', 'Page Bridge · In-page toolbox');
   pop.classList.add('open');
   var list = sq('#pop-list');
   list.innerHTML =
-    '<div class="d" style="padding:4px 6px">交互：<b>右下角圆形 FAB</b>（可拖拽、记忆位置、Alt+Shift+D 唤起）→ 点击展开<b>六分类面板</b> → 悬停/点击分类弹出 <b>Popover</b> 功能列表 → 点击功能在侧边<b>详情浮层</b>查看结果（列表保持可点）。<br><br>' +
-    '门控：本工具箱按<b>站点白名单</b>注入 —— background 检测页面命中白名单后经 chrome.scripting 注入页面主世界（MAIN）；配置变更即时生效，移出白名单立即隐藏，重新命中自动恢复。<br><br>' +
-    '交付模型：<b>发给 LLM</b> 拆成两条通道 —— <b>复制</b>（结果进剪贴板，人工粘贴进对话）与 <b>存储</b>（写入 localStorage，LLM 经 broker 的 storage / eval 自取）；能跑起来的脚本 / 指令归入 <b>开发产物</b>。<br><br>' +
-    '设计原型与模块地图见仓库 docs/toolbox/ 与 docs/toolbox-proto-map.md。</div>';
+    '<div class="d" style="padding:4px 6px">' + t(
+      '交互：<b>右下角圆形 FAB</b>（可拖拽、记忆位置、Alt+Shift+D 唤起）→ 点击展开<b>六分类面板</b> → 悬停/点击分类弹出 <b>Popover</b> 功能列表 → 点击功能在侧边<b>详情浮层</b>查看结果（列表保持可点）。<br><br>' +
+      '门控：本工具箱按<b>站点白名单</b>注入 —— background 检测页面命中白名单后经 chrome.scripting 注入页面主世界（MAIN）；配置变更即时生效，移出白名单立即隐藏，重新命中自动恢复。<br><br>' +
+      '交付模型：<b>发给 LLM</b> 拆成两条通道 —— <b>复制</b>（结果进剪贴板，人工粘贴进对话）与 <b>存储</b>（写入 localStorage，LLM 经 broker 的 storage / eval 自取）；能跑起来的脚本 / 指令归入 <b>开发产物</b>。<br><br>' +
+      '设计原型与模块地图见仓库 docs/toolbox/ 与 docs/toolbox-proto-map.md。',
+      'Interaction: <b>circular FAB at the bottom-right</b> (draggable, remembers its position, Alt+Shift+D to toggle) → click to expand the <b>six-category panel</b> → hover / click a category for the <b>Popover</b> feature list → click a feature to view its result in the side <b>detail overlay</b> (the list stays clickable).<br><br>' +
+      'Gating: the toolbox is injected according to the <b>site allowlist</b> — when a page matches, background injects the modules into the page MAIN world via chrome.scripting; config changes take effect immediately, non-allowlisted pages are hidden at once and restored when they match again.<br><br>' +
+      'Delivery model: <b>Send to LLM</b> has two channels — <b>Copy</b> (clipboard, paste manually into the chat) and <b>Store</b> (localStorage; the LLM reads it through the broker\'s storage / eval); runnable scripts or commands go to <b>Dev Artifacts</b>.<br><br>' +
+      'Design prototype and module map: docs/toolbox/ and docs/toolbox-proto-map.md.'
+    ) + '</div>';
   layoutPop();
+}
+
+/* ---------- 语言切换：重绘面板 / 列表 / 关于页 / 撤销条，再交回 boot 重绑事件 ---------- */
+function applyLang(){
+  paintPanel();
+  paintFab();
+  paintCoach();
+  paintUndoPill(state.undo.length);
+  sq('#dpop-x').title = t('关闭', 'Close');
+  if(state.open) layout();
+  if(state.about){
+    openAbout();
+  } else if(pop.classList.contains('open') && state.cat){
+    closeDetail();          /* 详情内容由功能脚本生成，切换语言后收起，避免中英混排 */
+    renderList(state.cat);
+    layoutPop();
+  }
+  if(B.rebindLang) B.rebindLang();
 }
 
 /* ---------- 导出 ---------- */
@@ -224,7 +273,7 @@ B.ui = {
   hideForPick: hideForPick, showAfterPick: showAfterPick,
   openPop: openPop, closePop: closePop, scheduleClose: scheduleClose, cancelClose: function(){ clearTimeout(hoverTimer); }, renderList: renderList,
   openDetail: openDetail, closeDetail: closeDetail, clearDetail: clearDetail, openAbout: openAbout,
-  bindStatic: bindStatic,
+  bindStatic: bindStatic, applyLang: applyLang,
   pushUndo: pushUndo, refreshUndo: refreshUndo,
   detailTimer: null /* 轮询类详情用：B.ui.detailTimer = setInterval(...)，clearDetail 会自动清 */
 };

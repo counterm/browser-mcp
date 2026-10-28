@@ -12,20 +12,27 @@ B.countOf = function(cid){ return B.FEATS.filter(function(f){ return f.cat === c
 sqa('.cat i').forEach(function(i){ i.textContent = B.countOf(i.dataset.c); });
 
 /* ---------- 事件绑定（可重跑：站点整块重写文档会清空全部监听，core.js 自检发现后调 B.rebind） ---------- */
+/* 头部按钮与分类按钮：切换语言时面板内容会被重绘（旧节点事件随之丢失），只需重绑这两组 */
+function bindHeader(){
+  sq('#p-close').onclick = ui.closePanel;
+  sq('#p-about').onclick = ui.openAbout;
+  sq('#p-lang').onclick = function(){ B.toggleLang(); };
+}
+function bindCats(){
+  $$('.cat', panel).forEach(function(b){
+    var id = b.dataset.c;
+    b.addEventListener('mouseenter', function(){ if(!state.open) ui.openPanel(); ui.openPop(id); });
+    b.addEventListener('mouseleave', ui.scheduleClose);
+    b.addEventListener('click', function(e){ e.stopPropagation(); state.pin ? ui.closePop() : ui.openPop(id, true); });
+  });
+}
 function bindUi(){
 if(B.ui && B.ui.bindStatic) B.ui.bindStatic(); /* ui.js 里挂在静态节点上的 onclick（重写后同样被清空） */
 /* ---------- 基础事件 ---------- */
 fab.addEventListener('click', function(){ if(!fab._moved) ui.togglePanel(); });
 fab.addEventListener('keydown', function(e){ if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); ui.togglePanel(); } });
-sq('#p-close').onclick = ui.closePanel;
-sq('#p-about').onclick = ui.openAbout;
-
-$$('.cat', panel).forEach(function(b){
-  var id = b.dataset.c;
-  b.addEventListener('mouseenter', function(){ if(!state.open) ui.openPanel(); ui.openPop(id); });
-  b.addEventListener('mouseleave', ui.scheduleClose);
-  b.addEventListener('click', function(e){ e.stopPropagation(); state.pin ? ui.closePop() : ui.openPop(id, true); });
-});
+bindHeader();
+bindCats();
 pop.addEventListener('mouseenter', ui.cancelClose);
 pop.addEventListener('mouseleave', ui.scheduleClose);
 pop.addEventListener('click', function(e){ e.stopPropagation(); });
@@ -97,6 +104,8 @@ document.addEventListener('pointerdown', function(e){
 }, true);
 }
 B.rebind = bindUi;
+/* 切换语言后只重绑重绘过的节点，避免给 FAB / Popover 重复叠加监听 */
+B.rebindLang = function(){ if(B.ui && B.ui.bindStatic) B.ui.bindStatic(); bindHeader(); bindCats(); };
 
 /* 恢复位置：只做一次，须在 clampFab() 之前 */
 (function(){

@@ -1,6 +1,6 @@
 /* 工具箱 · picker —— 选择器工具（cssPath / bestSelector / 评分 / XPath）+ 元素拾取器。 */
 (function(B){
-var el = B.u.el, clamp = B.u.clamp, esc = B.u.esc, toast = B.w.toast;
+var el = B.u.el, clamp = B.u.clamp, esc = B.u.esc, toast = B.w.toast, t = B.t;
 var state = B.state, shadow = B.shadow, host = B.host;
 
 /* ---------- 选择器 ---------- */
@@ -32,17 +32,17 @@ function bestSelector(node){
   return cssPath(node);
 }
 var SCORE_RULES = [
-  [/^\[data-test(id|-test|-cy)/, 100, '测试 ID，最稳'],
-  [/^#[a-zA-Z][\w-]{2,}$/, 90, '语义化 id'],
-  [/^\[aria-label=/, 85, '无障碍属性'],
-  [/^\[name=/, 80, '表单 name'],
-  [/^\.[a-zA-Z][\w-]*$/, 50, '单类名，可能重复'],
-  [/nth-child|nth-of-type/, 15, '位置依赖，改版必炸'],
-  [/^#[\d.]+$|^\._[\w-]+$/, 5, '自动生成，勿用']
+  [/^\[data-test(id|-test|-cy)/, 100, '测试 ID，最稳', 'Test ID, most stable'],
+  [/^#[a-zA-Z][\w-]{2,}$/, 90, '语义化 id', 'Semantic id'],
+  [/^\[aria-label=/, 85, '无障碍属性', 'Accessibility attribute'],
+  [/^\[name=/, 80, '表单 name', 'Form name'],
+  [/^\.[a-zA-Z][\w-]*$/, 50, '单类名，可能重复', 'Single class, may repeat'],
+  [/nth-child|nth-of-type/, 15, '位置依赖，改版必炸', 'Position-dependent, breaks on redesign'],
+  [/^#[\d.]+$|^\._[\w-]+$/, 5, '自动生成，勿用', 'Auto-generated, avoid']
 ];
 function scoreSelector(sel){
-  for(var i = 0; i < SCORE_RULES.length; i++) if(SCORE_RULES[i][0].test(sel)) return { score: SCORE_RULES[i][1], why: SCORE_RULES[i][2] };
-  return { score: 40, why: '复合选择器' };
+  for(var i = 0; i < SCORE_RULES.length; i++) if(SCORE_RULES[i][0].test(sel)) return { score: SCORE_RULES[i][1], why: t(SCORE_RULES[i][2], SCORE_RULES[i][3]) };
+  return { score: 40, why: t('复合选择器', 'Compound selector') };
 }
 function xpathOf(node){
   var parts = [];
@@ -107,7 +107,7 @@ function pick(){
 }
 function ensurePicked(){
   if(state.picked && state.picked.isConnected) return Promise.resolve(state.picked);
-  toast('请在页面上拾取一个元素（Esc 取消）');
+  toast(t('请在页面上拾取一个元素（Esc 取消）', 'Pick an element on the page (Esc to cancel)'));
   return pick().then(function(e){ if(!e) return null; state.picked = e; return e; });
 }
 

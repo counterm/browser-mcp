@@ -19,6 +19,21 @@ B.u = {
   sq: null, sqa: null /* Shadow DOM 内查询，挂载后填充 */
 };
 
+/* ---------- 语言：默认中文，可切换英文；文案统一走 B.t(中文, 英文) ---------- */
+B.LANG_KEY = 'ba:tbx-lang';
+B.lang = 'zh';
+try{ if(localStorage.getItem(B.LANG_KEY) === 'en') B.lang = 'en'; }catch(e){}
+B.t = function(zh, en){ return B.lang === 'en' ? (en == null ? zh : en) : zh; };
+B.langHooks = [];
+B.onLang = function(fn){ if(typeof fn === 'function') B.langHooks.push(fn); };
+B.setLang = function(lang){
+  B.lang = lang === 'en' ? 'en' : 'zh';
+  try{ localStorage.setItem(B.LANG_KEY, B.lang); }catch(e){}
+  if(B.ui && B.ui.applyLang) B.ui.applyLang();
+  B.langHooks.forEach(function(fn){ try{ fn(B.lang); }catch(e){} });
+};
+B.toggleLang = function(){ B.setLang(B.lang === 'en' ? 'zh' : 'en'); };
+
 /* ---------- 图标 ---------- */
 B.ICONS = {
   toolbox:'<rect x="4" y="8" width="16" height="12" rx="2"/><path d="M9 8V6a3 3 0 016 0v2M9.5 13.5h5"/>',
@@ -141,7 +156,9 @@ var WCSS = `
 .cat.act i{color:var(--c)}
 .pf{display:flex;align-items:center;gap:6px;margin-top:11px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:10.5px;color:#64748b}
 kbd{font:10px ui-monospace,monospace;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:1px 4px;color:#cbd5e1}
-.pf .link{margin-left:auto;border:none;background:none;color:#818cf8;font-size:10.5px;cursor:pointer;padding:0}
+.pf .link{border:none;background:none;color:#818cf8;font-size:10.5px;cursor:pointer;padding:0}
+.pf .lang{margin-left:auto}
+.pf .about{margin-left:6px}
 .pf .link:hover{color:#a5b4fc;text-decoration:underline}
 /* Popover */
 .pop{position:fixed;width:332px;max-height:72vh;display:flex;flex-direction:column;border-radius:16px;color:#e5e7eb;background:rgba(15,23,42,.94);border:1px solid rgba(255,255,255,.12);box-shadow:0 22px 60px rgba(2,6,23,.55);backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);opacity:0;transform:translateX(10px);pointer-events:none;transition:opacity .14s ease,transform .16s ease;z-index:30;overflow:hidden}

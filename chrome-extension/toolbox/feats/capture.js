@@ -4,7 +4,7 @@
    滚动编排、拼接、下载全部在页面侧完成。 */
 (function(B){
 if(!B) return;
-var el = B.u.el, esc = B.u.esc, $$ = B.u.$$;
+var el = B.u.el, esc = B.u.esc, $$ = B.u.$$, t = B.t;
 var kv = B.w.kv, note = B.w.note, toast = B.w.toast;
 
 var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
@@ -15,14 +15,14 @@ function bridge(action, params, timeoutMs){
     var id = Math.random().toString(36).slice(2);
     var timer = setTimeout(function(){
       cleanup();
-      reject(new Error('扩展桥无响应（扩展未就绪或刚更新过，请刷新页面后重试）'));
+      reject(new Error(t('扩展桥无响应（扩展未就绪或刚更新过，请刷新页面后重试）', 'Extension bridge not responding (extension not ready or just updated — refresh the page and retry)')));
     }, timeoutMs || 15000);
     function onRes(ev){
       var d = ev.detail;
       if(!d || d.id !== id) return;
       cleanup();
       if(d.ok) resolve(d.data);
-      else reject(new Error(d.error || '扩展桥调用失败'));
+      else reject(new Error(d.error || t('扩展桥调用失败', 'Extension bridge call failed')));
     }
     function cleanup(){ clearTimeout(timer); window.removeEventListener('batb:bridge:res', onRes); }
     window.addEventListener('batb:bridge:res', onRes);
@@ -44,20 +44,20 @@ function loadImg(url){
   return new Promise(function(res, rej){
     var im = new Image();
     im.onload = function(){ res(im); };
-    im.onerror = function(){ rej(new Error('截图数据解码失败')); };
+    im.onerror = function(){ rej(new Error(t('截图数据解码失败', 'Failed to decode the screenshot image'))); };
     im.src = url;
   });
 }
 
 function downloadCanvas(cv, name){
   cv.toBlob(function(blob){
-    if(!blob){ toast('PNG 编码失败'); return; }
+    if(!blob){ toast(t('PNG 编码失败', 'PNG encoding failed')); return; }
     var u = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = u; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){ URL.revokeObjectURL(u); }, 5000);
-    toast('已下载 ' + name);
+    toast(t('已下载 ' + name, 'Downloaded ' + name));
   }, 'image/png');
 }
 
@@ -138,7 +138,7 @@ function runElshot(b, target){
       var visTop = Math.max(r.top, 0), visBottom = Math.min(r.bottom, vh);
       var cropX = Math.max(r.left, 0), cropRight = Math.min(r.right, vw);
       var sliceH = visBottom - visTop, cropW = cropRight - cropX;
-      if(sliceH < 4 || cropW < 4) throw new Error('目标区域几乎不在视口内，无法截取');
+      if(sliceH < 4 || cropW < 4) throw new Error(t('目标区域几乎不在视口内，无法截取', 'The target area is almost entirely outside the viewport; cannot capture'));
       var sx = Math.round(cropX * dpr), sy = Math.round(visTop * dpr);
       var sw = Math.round(cropW * dpr), sh = Math.round(sliceH * dpr);
       /* 可见切片在容器内容坐标里的起点；页面级滚动时画布即从切片顶开始 */
@@ -152,7 +152,7 @@ function runElshot(b, target){
       B.dlog('elshot', 'plan rect=' + Math.round(r.left) + ',' + Math.round(r.top) + ',' + Math.round(r.width) + 'x' + Math.round(r.height) +
         ' slice=' + Math.round(sliceH) + 'x' + Math.round(cropW) + ' scrollRange=' + maxScroll + ' steps=' + pos.length);
 
-      toast((page ? '开始区域截图…' : '开始容器截图（' + pos.length + ' 屏）') + '，请保持页面在前台…');
+      toast((page ? t('开始区域截图…', 'Starting region screenshot…') : t('开始容器截图（' + pos.length + ' 屏）', 'Starting container screenshot (' + pos.length + ' screens)')) + t('，请保持页面在前台…', ' — keep the page in the foreground…'));
       await sleep(900);
 
       for(var i = 0; i < pos.length; i++){
@@ -164,7 +164,7 @@ function runElshot(b, target){
         tiles.push({ y: cur, url: res.dataUrl });
         B.dlog('elshot', 'tile ' + tiles.length + '@' + cur + ' ok');
       }
-      if(!tiles.length) throw new Error('未截取到任何画面');
+      if(!tiles.length) throw new Error(t('未截取到任何画面', 'No frames were captured'));
 
       /* 拼接：每屏裁出容器矩形，按容器内容坐标（scrollTop + 切片偏移）定位，天然无重叠错位 */
       var imgs = await Promise.all(tiles.map(function(t){ return loadImg(t.url); }));
@@ -181,16 +181,16 @@ function runElshot(b, target){
 
       var desc = sc.tagName.toLowerCase() + (sc.id ? '#' + sc.id : '') + (sc.className && typeof sc.className === 'string' ? '.' + sc.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
       var notes = [];
-      if(fl.fixed || fl.sticky) notes.push('截图期间已自动隐藏 ' + fl.fixed + ' 个 fixed 元素、取消 ' + fl.sticky + ' 个 sticky 吸附（现已还原）。');
-      notes.push('截图期间请勿滚动页面或该容器。');
-      if(page) notes.push('目标无可滚动祖先，已按区域截图处理（仅当前可见部分）。');
+      if(fl.fixed || fl.sticky) notes.push(t('截图期间已自动隐藏 ' + fl.fixed + ' 个 fixed 元素、取消 ' + fl.sticky + ' 个 sticky 吸附（现已还原）。', 'Temporarily hid ' + fl.fixed + ' fixed elements and un-stuck ' + fl.sticky + ' sticky elements during capture (now restored).'));
+      notes.push(t('截图期间请勿滚动页面或该容器。', 'Do not scroll the page or the container during capture.'));
+      if(page) notes.push(t('目标无可滚动祖先，已按区域截图处理（仅当前可见部分）。', 'The target has no scrollable ancestor; fell back to a region screenshot (currently visible part only).'));
       var clipped = sc.clientHeight - sliceH; /* 被视口上下裁掉、物理上无法截取的内容高度 */
-      if(!page && clipped > 2) notes.push('容器有约 ' + clipped + 'px 内容被视口裁住（顶部/底部露出不全），该部分无法截取——可缩小页面缩放后再试。');
-      if(r.left < 0 || r.right > vw) notes.push('横向超出视口的部分未截取。');
+      if(!page && clipped > 2) notes.push(t('容器有约 ' + clipped + 'px 内容被视口裁住（顶部/底部露出不全），该部分无法截取——可缩小页面缩放后再试。', 'About ' + clipped + 'px of the container is clipped by the viewport (top/bottom not fully visible) and cannot be captured — zoom out and retry.'));
+      if(r.left < 0 || r.right > vw) notes.push(t('横向超出视口的部分未截取。', 'Content beyond the viewport width was not captured.'));
       showResult(b, cv, [
-        ['目标', esc(desc)],
-        ['输出', sw + '×' + H + ' px PNG' + (outH > H ? '（超出 32767px，已截断）' : '')],
-        [page ? '模式' : '拼接', page ? '区域截图 · 当前可见部分' : tiles.length + ' 屏 · DPR ' + dpr]
+        [t('目标', 'Target'), esc(desc)],
+        [t('输出', 'Output'), sw + '×' + H + ' px PNG' + (outH > H ? t('（超出 32767px，已截断）', ' (exceeds 32767px, truncated)') : '')],
+        [page ? t('模式', 'Mode') : t('拼接', 'Stitched'), page ? t('区域截图 · 当前可见部分', 'Region screenshot · current visible part') : t(tiles.length + ' 屏 · DPR ' + dpr, tiles.length + ' screens · DPR ' + dpr)]
       ], notes);
     } finally {
       B.dlog('elshot', 'finally tiles=' + tiles.length);
@@ -201,14 +201,15 @@ function runElshot(b, target){
       window.scrollTo({ top: prevPageY, behavior: 'instant' });
       B.host.style.display = prevDisp;
     }
-  })().catch(function(e){ B.dlog('elshot', 'error ' + String(e && e.message || e)); toast('容器截图失败'); b.appendChild(note('失败：' + esc(String(e.message || e)))); });
+  })().catch(function(e){ B.dlog('elshot', 'error ' + String(e && e.message || e)); toast(t('容器截图失败', 'Container screenshot failed')); b.appendChild(note(t('失败：' + esc(String(e.message || e)), 'Failed: ' + esc(String(e.message || e))))); });
 }
 
 B.register([
 { id:'qr', cat:'capture', name:'网址二维码', icon:'qr', star:2, desc:'当前网址纯本地生成二维码，手机扫码直达',
+  en:{ name:'URL QR Code', desc:'Generate a QR code for the current URL entirely locally; scan it to open on your phone' },
   run:function(b){
     var url = location.href;
-    if(!B.QR){ b.appendChild(note('二维码模块（qr.js）未加载，请检查扩展注入清单。')); return; }
+    if(!B.QR){ b.appendChild(note(t('二维码模块（qr.js）未加载，请检查扩展注入清单。', 'QR module (qr.js) not loaded; check the extension injection manifest.'))); return; }
     var box = el('div');
     box.style.cssText = 'display:flex;justify-content:center;background:#fff;border-radius:12px;padding:10px;margin:4px 0 8px';
     var cv = document.createElement('canvas');
@@ -226,18 +227,19 @@ B.register([
       for(var r = 0; r < n; r++) for(var c = 0; c < n; c++)
         if(qr.isDark(r, c)) ctx.fillRect((c + quiet) * cell, (r + quiet) * cell, cell, cell);
       cv.style.cssText = 'width:' + size + 'px;max-width:100%;height:auto;image-rendering:pixelated;display:block';
-      b.appendChild(kv([['网址', esc(url)], ['规格', n + '×' + n + ' 模块 · EC 级别 M']]));
+      b.appendChild(kv([[t('网址', 'URL'), esc(url)], [t('规格', 'Size'), n + '×' + n + t(' 模块 · EC 级别 M', ' modules · EC level M')]]));
       b.appendChild(el('div', 'row2',
-        '<button class="btn2" data-a="dl">下载 PNG</button><button class="btn2" data-a="cp">复制链接</button>'));
+        '<button class="btn2" data-a="dl">' + t('下载 PNG', 'Download PNG') + '</button><button class="btn2" data-a="cp">' + t('复制链接', 'Copy Link') + '</button>'));
       b.querySelector('[data-a="dl"]').onclick = function(){ downloadCanvas(cv, 'qr-' + safeName(location.hostname) + '.png'); };
-      b.querySelector('[data-a="cp"]').onclick = function(){ B.u.copyText(url).then(function(){ toast('已复制到剪贴板'); }); };
+      b.querySelector('[data-a="cp"]').onclick = function(){ B.u.copyText(url).then(function(){ toast(t('已复制到剪贴板', 'Copied to clipboard')); }); };
     }catch(e){
       box.style.display = 'none';
-      b.appendChild(note('生成失败：' + esc(String(e.message || e)) + '（网址过长超出 v40 容量上限）'));
+      b.appendChild(note(t('生成失败：' + esc(String(e.message || e)), 'Generation failed: ' + esc(String(e.message || e))) + t('（网址过长超出 v40 容量上限）', ' (URL too long, exceeds the v40 capacity limit)')));
     }
-    b.appendChild(note('纯本地生成，网址不会发往任何服务。用微信 / 系统相机扫码即可在手机打开本页。'));
+    b.appendChild(note(t('纯本地生成，网址不会发往任何服务。用微信 / 系统相机扫码即可在手机打开本页。', 'Generated locally; the URL is never sent to any server. Scan it with WeChat or your system camera to open this page on your phone.')));
   }},
 { id:'fullshot', cat:'capture', name:'整页截图', icon:'image', star:3, desc:'滚动逐屏截取拼接为长图，自动下载 PNG',
+  en:{ name:'Full-page Screenshot', desc:'Scroll and capture screen by screen, stitch into a long image, auto-download PNG' },
   run:function(b){
     var prevDisp = B.host.style.display;
     var prevScroll = window.scrollY;
@@ -247,12 +249,12 @@ B.register([
       var dpr = window.devicePixelRatio || 1;
       var vh = window.innerHeight;
       var total = Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0);
-      if(!(total > 0)) throw new Error('页面高度为 0，无可截取内容');
+      if(!(total > 0)) throw new Error(t('页面高度为 0，无可截取内容', 'Page height is 0; nothing to capture'));
 
       var pos = [];
       for(var y = 0; y < total; y += vh) pos.push(Math.min(y, total - vh));
 
-      toast('开始整页截图（' + pos.length + ' 屏），请保持页面在前台…');
+      toast(t('开始整页截图（' + pos.length + ' 屏），请保持页面在前台…', 'Starting full-page screenshot (' + pos.length + ' screens); keep the page in the foreground…'));
       await sleep(900);
 
       /* 隐藏工具箱与页面滚动条，避免截进画面 */
@@ -275,7 +277,7 @@ B.register([
         B.style.pageStyle('ba-nosb', null);
         window.scrollTo({ top: prevScroll, behavior: 'instant' });
       }
-      if(!tiles.length) throw new Error('未截取到任何画面');
+      if(!tiles.length) throw new Error(t('未截取到任何画面', 'No frames were captured'));
 
       /* 拼接：按实际 scrollY × dpr 定位每屏，规避累积误差 */
       var imgs = await Promise.all(tiles.map(function(t){ return loadImg(t.url); }));
@@ -292,28 +294,30 @@ B.register([
       downloadCanvas(cv, name);
 
       var shotNotes = [];
-      if(fl.fixed || fl.sticky) shotNotes.push('截图期间已自动隐藏 ' + fl.fixed + ' 个 fixed 元素、取消 ' + fl.sticky + ' 个 sticky 吸附（现已还原）。');
-      if(pos.length === 1) shotNotes.push('本次仅截到一屏：当前文档自身不可滚动，滚动可能发生在某个内部容器——如需截取内部滚动范围，请改用「容器截图」。');
-      shotNotes.push('横向超出视口的部分不会截取；截图期间请勿滚动或切走页面。');
+      if(fl.fixed || fl.sticky) shotNotes.push(t('截图期间已自动隐藏 ' + fl.fixed + ' 个 fixed 元素、取消 ' + fl.sticky + ' 个 sticky 吸附（现已还原）。', 'Temporarily hid ' + fl.fixed + ' fixed elements and un-stuck ' + fl.sticky + ' sticky elements during capture (now restored).'));
+      if(pos.length === 1) shotNotes.push(t('本次仅截到一屏：当前文档自身不可滚动，滚动可能发生在某个内部容器——如需截取内部滚动范围，请改用「容器截图」。', 'Only one screen was captured: the document itself does not scroll — scrolling probably happens inside an inner container. Use "Container Screenshot" to capture that scroll range.'));
+      shotNotes.push(t('横向超出视口的部分不会截取；截图期间请勿滚动或切走页面。', 'Content beyond the viewport width is not captured; do not scroll or switch away from the page during capture.'));
       showResult(b, cv, [
-        ['输出', w + '×' + H + ' px PNG' + (fullH > H ? '（超出 32767px，已截断）' : '')],
-        ['拼接', tiles.length + ' 屏 · DPR ' + dpr],
-        ['文件', esc(name)]
+        [t('输出', 'Output'), w + '×' + H + ' px PNG' + (fullH > H ? t('（超出 32767px，已截断）', ' (exceeds 32767px, truncated)') : '')],
+        [t('拼接', 'Stitched'), t(tiles.length + ' 屏 · DPR ' + dpr, tiles.length + ' screens · DPR ' + dpr)],
+        [t('文件', 'File'), esc(name)]
       ], shotNotes);
-    })().catch(function(e){ toast('整页截图失败'); b.appendChild(note('失败：' + esc(String(e.message || e)))); });
+    })().catch(function(e){ toast(t('整页截图失败', 'Full-page screenshot failed')); b.appendChild(note(t('失败：' + esc(String(e.message || e)), 'Failed: ' + esc(String(e.message || e))))); });
   }},
 { id:'elshot', cat:'capture', name:'容器截图', icon:'crop', star:3, desc:'拾取滚动容器，只截它内部的完整滚动范围',
+  en:{ name:'Container Screenshot', desc:'Pick a scrollable container and capture its entire inner scroll range' },
   run:function(b){
     B.dlog('elshot', 'opened');
-    b.appendChild(note('在页面上点击要截取的滚动容器（或其中任一元素，自动向上定位滚动区）：内部逐屏滚动截取、按容器矩形裁剪拼接为长图；无可滚动祖先时退化为区域截图。Esc 取消。'));
-    toast('请在页面上点击要截取的容器');
+    b.appendChild(note(t('在页面上点击要截取的滚动容器（或其中任一元素，自动向上定位滚动区）：内部逐屏滚动截取、按容器矩形裁剪拼接为长图；无可滚动祖先时退化为区域截图。Esc 取消。', 'Click the scrollable container to capture on the page (or any element inside it — the scroll area is located upwards automatically). It scrolls the container screen by screen, crops to the container rectangle and stitches a long image; without a scrollable ancestor it falls back to a region screenshot. Esc cancels.')));
+    toast(t('请在页面上点击要截取的容器', 'Click the container to capture on the page'));
     B.pick().then(function(t){ if(t) runElshot(b, t); });
   }},
 { id:'apinet', cat:'capture', name:'接口调用', icon:'share', star:3, desc:'捕获页面请求：URL/请求体/响应/鉴权头，一键复制给 LLM',
+  en:{ name:'API Calls', desc:'Capture page requests: URL / body / response / auth headers; copy them to an LLM in one click' },
   run:function(b){
     var N = window.__BATB_NET__;
     if(!N){
-      b.appendChild(note('接口捕获层（capture-main.js）未加载——扩展刚更新过的话，请到 chrome://extensions 重载扩展并刷新本页后重试。'));
+      b.appendChild(note(t('接口捕获层（capture-main.js）未加载——扩展刚更新过的话，请到 chrome://extensions 重载扩展并刷新本页后重试。', 'The request capture layer (capture-main.js) is not loaded — if the extension was just updated, reload it at chrome://extensions, refresh this page and retry.')));
       return;
     }
     var copyText = B.u.copyText;
@@ -321,9 +325,9 @@ B.register([
 
     /* 顶部操作行 */
     var bar = el('div', 'row2',
-      '<button class="btn2" data-a="red">脱敏：开</button><button class="btn2" data-a="clr">清空记录</button>');
+      '<button class="btn2" data-a="red">' + t('脱敏：开', 'Redact: On') + '</button><button class="btn2" data-a="clr">' + t('清空记录', 'Clear') + '</button>');
     b.appendChild(bar);
-    var setRedBtn = function(){ bar.querySelector('[data-a="red"]').textContent = '脱敏：' + (redOn ? '开' : '关'); };
+    var setRedBtn = function(){ bar.querySelector('[data-a="red"]').textContent = t(redOn ? '脱敏：开' : '脱敏：关', redOn ? 'Redact: On' : 'Redact: Off'); };
     setRedBtn();
     bar.querySelector('[data-a="red"]').onclick = function(){
       redOn = !redOn;
@@ -337,7 +341,7 @@ B.register([
       bridge('netclear', {}).then(function(){ N.clear(); if(view.mode === 'list') render(); }).catch(function(){});
       if(view.mode === 'detail'){ view.mode = 'list'; view.id = null; }
       render();
-      toast('已清空');
+      toast(t('已清空', 'Cleared'));
     };
 
     var d = el('div', 'lst');
@@ -349,7 +353,7 @@ B.register([
       return p2(x.getHours()) + ':' + p2(x.getMinutes()) + ':' + p2(x.getSeconds());
     };
     var stCls = function(s){ return s === 200 ? 'g' : s === 'ERR' ? 'r' : 'y'; };
-    var SRC_LBL = { page: '页面', merged: '合并', net: '仅头' };
+    var SRC_LBL = { page: t('页面', 'Page'), merged: t('合并', 'Merged'), net: t('仅头', 'Headers only') };
 
     /* URL 拆成「前缀 / 尾段 / ?参数 / #锚点」：尾段与参数用低对比 tag，前缀超宽时省略 */
     function urlTags(u){
@@ -381,7 +385,7 @@ B.register([
       d.innerHTML = '';
       var recs = N.recs.slice().reverse();
       if(!recs.length){
-        d.appendChild(el('div', 'note', '暂无请求。本页 document_start 起的 fetch/XHR（含 axios）与网络层请求都会记录；打开本面板后刷新或操作页面即可看到新请求。'));
+        d.appendChild(el('div', 'note', t('暂无请求。本页 document_start 起的 fetch/XHR（含 axios）与网络层请求都会记录；打开本面板后刷新或操作页面即可看到新请求。', 'No requests yet. fetch/XHR (including axios) since document_start and network-layer requests are all recorded; refresh or interact with the page after opening this panel to see new requests.')));
         return;
       }
       recs.forEach(function(r){
@@ -389,7 +393,7 @@ B.register([
           '<span class="m">' + esc(r.m) + '</span><span class="u uh" title="' + esc(r.u) + '">' + urlTags(r.u) + '</span>' +
           '<span class="c"><span class="bdg ' + stCls(r.s) + '">' + esc(r.s == null ? '…' : String(r.s)) + '</span>' +
           (r.src !== 'page' ? ' <span style="color:#475569">' + SRC_LBL[r.src] + '</span>' : '') +
-          (r.pending ? ' <span style="color:#475569">读体中</span>' : '') +
+          (r.pending ? ' <span style="color:#475569">' + t('读体中', 'Reading body') + '</span>' : '') +
           ' <span style="color:#475569">' + timeStr(r.t) + '</span></span>');
         li.style.cursor = 'pointer';
         li.onclick = function(){ showDetail(r.id); };
@@ -400,7 +404,7 @@ B.register([
     function hdrDom(title, hs){
       var wrap = el('div');
       wrap.appendChild(el('div', 'grp-h', title));
-      if(!hs || !hs.length){ wrap.appendChild(el('div', 'note', '（无）')); return wrap; }
+      if(!hs || !hs.length){ wrap.appendChild(el('div', 'note', t('（无）', '(none)'))); return wrap; }
       hs.forEach(function(h){
         wrap.appendChild(el('div', 'li', '<span class="u" style="word-break:break-all;white-space:normal;overflow:visible;text-overflow:clip">' + esc(h.k) + ': ' + esc(h.v) + '</span>'));
       });
@@ -411,42 +415,42 @@ B.register([
       view.mode = 'detail'; view.id = id;
       d.innerHTML = '';
       var r = N.find(id);
-      var back = el('div', 'row2', '<button class="btn2" data-a="back">← 返回列表</button>');
+      var back = el('div', 'row2', '<button class="btn2" data-a="back">' + t('← 返回列表', '← Back to list') + '</button>');
       back.querySelector('[data-a="back"]').onclick = function(){ view.mode = 'list'; view.id = null; render(); };
       d.appendChild(back);
-      if(!r){ d.appendChild(el('div', 'note', '记录已不存在（缓冲滚动或已清空）。')); return; }
+      if(!r){ d.appendChild(el('div', 'note', t('记录已不存在（缓冲滚动或已清空）。', 'The record no longer exists (the buffer rolled over or it was cleared).'))); return; }
 
       var srcLbl = SRC_LBL[r.src] || r.src;
       d.appendChild(kv([
-        ['方法', esc(r.m)],
+        [t('方法', 'Method'), esc(r.m)],
         ['URL', '<span class="tgline" style="word-break:break-all">' + urlTags(r.u) + '</span>'],
-        ['状态', esc(r.s == null ? '…' : String(r.s)) + (r.ms != null ? ' · ' + r.ms + 'ms' : '') + ' · ' + esc(srcLbl)],
-        ['时间', timeStr(r.t)]
+        [t('状态', 'Status'), esc(r.s == null ? '…' : String(r.s)) + (r.ms != null ? ' · ' + r.ms + 'ms' : '') + ' · ' + esc(srcLbl)],
+        [t('时间', 'Time'), timeStr(r.t)]
       ]));
       if(r.note) d.appendChild(note(esc(r.note)));
 
-      d.appendChild(hdrDom('请求头' + (redOn ? '（已脱敏）' : ''), N.redactHdrs(r.reqHdr, redOn)));
+      d.appendChild(hdrDom(t('请求头', 'Request Headers') + (redOn ? t('（已脱敏）', ' (redacted)') : ''), N.redactHdrs(r.reqHdr, redOn)));
       if(r.reqBody){
-        d.appendChild(el('div', 'grp-h', '请求体' + (redOn ? '（已脱敏）' : '')));
+        d.appendChild(el('div', 'grp-h', t('请求体', 'Request Body') + (redOn ? t('（已脱敏）', ' (redacted)') : '')));
         d.appendChild(B.w.codeBox(N.redactText(r.reqBody, redOn), 200));
       }
-      d.appendChild(hdrDom('响应头' + (redOn ? '（已脱敏）' : ''), N.redactHdrs(r.resHdr, redOn)));
-      d.appendChild(el('div', 'grp-h', '响应体'));
-      if(r.pending) d.appendChild(el('div', 'note', '响应体读取中…（稍后返回列表再进即可看到）'));
+      d.appendChild(hdrDom(t('响应头', 'Response Headers') + (redOn ? t('（已脱敏）', ' (redacted)') : ''), N.redactHdrs(r.resHdr, redOn)));
+      d.appendChild(el('div', 'grp-h', t('响应体', 'Response Body')));
+      if(r.pending) d.appendChild(el('div', 'note', t('响应体读取中…（稍后返回列表再进即可看到）', 'Reading the response body… (go back to the list and reopen later)')));
       else if(r.resBody) d.appendChild(B.w.codeBox(N.redactText(r.resBody, redOn), 260));
-      else d.appendChild(el('div', 'note', r.s === 'ERR' ? '请求失败，无响应体。' : '（未捕获：非 fetch/XHR 发起、SSE/二进制，或响应超上限）'));
+      else d.appendChild(el('div', 'note', r.s === 'ERR' ? t('请求失败，无响应体。', 'Request failed; no response body.') : t('（未捕获：非 fetch/XHR 发起、SSE/二进制，或响应超上限）', '(Not captured: not fetch/XHR, SSE/binary, or the response exceeded the size limit)')));
 
       var btns = el('div', 'row2',
-        '<button class="btn2" data-a="fmt">复制调试文本</button><button class="btn2" data-a="curl">复制 cURL</button>');
-      btns.querySelector('[data-a="fmt"]').onclick = function(){ copyText(N.fmt(r, redOn)).then(function(){ toast('调试文本已复制，可粘贴给 LLM'); }); };
-      btns.querySelector('[data-a="curl"]').onclick = function(){ copyText(N.curl(r, redOn)).then(function(){ toast('cURL 已复制'); }); };
+        '<button class="btn2" data-a="fmt">' + t('复制调试文本', 'Copy Debug Text') + '</button><button class="btn2" data-a="curl">' + t('复制 cURL', 'Copy cURL') + '</button>');
+      btns.querySelector('[data-a="fmt"]').onclick = function(){ copyText(N.fmt(r, redOn)).then(function(){ toast(t('调试文本已复制，可粘贴给 LLM', 'Debug text copied — paste it into your LLM')); }); };
+      btns.querySelector('[data-a="curl"]').onclick = function(){ copyText(N.curl(r, redOn)).then(function(){ toast(t('cURL 已复制', 'cURL copied')); }); };
       d.appendChild(btns);
     }
 
     render();
     N.sync().then(function(){ if(view.mode === 'list') render(); }); /* 打开即合并 bg 头记录 */
     B.ui.detailTimer = setInterval(function(){ if(view.mode === 'list') render(); }, 1500); /* 清理由 ui.clearDetail 统一负责 */
-    b.appendChild(note('双层捕获：页面 hook 抓请求/响应体，扩展 webRequest 抓全量请求头（含 Cookie/Authorization），按 URL+时间合并——「仅头」= 整页跳转后只剩网络层记录（无响应体）。默认脱敏鉴权字段，需真实值再手动关。也可让 LLM 经 broker 的 netlog 命令自行查询（见 README）。'));
+    b.appendChild(note(t('双层捕获：页面 hook 抓请求/响应体，扩展 webRequest 抓全量请求头（含 Cookie/Authorization），按 URL+时间合并——「仅头」= 整页跳转后只剩网络层记录（无响应体）。默认脱敏鉴权字段，需真实值再手动关。也可让 LLM 经 broker 的 netlog 命令自行查询（见 README）。', 'Two-layer capture: a page hook grabs request/response bodies, while the extension webRequest API grabs all request headers (including Cookie/Authorization); merged by URL + time — "Headers only" means only the network-layer record remains after a full page navigation (no response body). Auth fields are redacted by default; turn it off manually when you need the real values. The LLM can also query this itself via the broker netlog command (see README).')));
   }}
 ]);
 })(window.BATB);
