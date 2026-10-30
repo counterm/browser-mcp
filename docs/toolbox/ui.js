@@ -20,6 +20,24 @@ fab.innerHTML = '<span class="ic">' + I('toolbox', 21) + '</span>';
 shadow.appendChild(fab);
 function paintFab(){ fab.setAttribute('aria-label', t('打开工具箱', 'Open toolbox')); }
 
+/* ---------- 录制 HUD：录制期间替代 FAB（暂停 / 停止）；三层弹窗由 beginRecord/endRecord 隐藏与恢复 ---------- */
+var recHud = el('div', 'rec-hud');
+recHud.innerHTML = '<button class="rh rh-p" type="button"></button><button class="rh rh-s" type="button"></button>';
+shadow.appendChild(recHud);
+var recCtl = null;
+function paintRecHud(paused){
+  var pb = recHud.querySelector('.rh-p'), sb = recHud.querySelector('.rh-s');
+  var pt = paused ? t('继续录制', 'Resume recording') : t('暂停录制', 'Pause recording');
+  pb.innerHTML = I(paused ? 'play' : 'pause', 16);
+  pb.title = pt; pb.setAttribute('aria-label', pt);
+  sb.innerHTML = I('stop', 15);
+  var st = t('停止录制并复制 YAML', 'Stop recording and copy YAML');
+  sb.title = st; sb.setAttribute('aria-label', st);
+}
+paintRecHud(false);
+recHud.querySelector('.rh-p').onclick = function(e){ e.stopPropagation(); if(recCtl && recCtl.onPause) recCtl.onPause(); };
+recHud.querySelector('.rh-s').onclick = function(e){ e.stopPropagation(); if(recCtl && recCtl.onStop) recCtl.onStop(); };
+
 var panel = el('div', 'panel');
 function paintPanel(){
   panel.innerHTML =
@@ -127,7 +145,7 @@ function closePanel(){
   undoPill.classList.remove('show');
   clearDetail();
 }
-function togglePanel(){ state.open ? closePanel() : openPanel(); }
+function togglePanel(){ if(state.recording) return; state.open ? closePanel() : openPanel(); }
 
 /* ---------- 拾取期间临时隐藏整个工具箱 UI（FAB/面板/列表/详情/撤销栈），结束后原样恢复 ---------- */
 function pickNodes(){ return [fab, panel, pop, dpop, undoPill]; }
@@ -135,6 +153,29 @@ function hideForPick(){ pickNodes().forEach(function(n){ n.classList.add('pick-h
 function showAfterPick(){
   pickNodes().forEach(function(n){ n.classList.remove('pick-hide'); });
   if(state.open) layout();
+}
+/* ---------- 录制期间：隐藏三层弹窗与撤销条，FAB 换成「暂停 / 停止」HUD；结束后原样恢复 ---------- */
+function beginRecord(ctl){
+  if(state.recording) return;
+  state.recording = true; recCtl = ctl || null;
+  pickNodes().forEach(function(n){ n.classList.add('pick-hide'); });
+  /* HUD 跟随 FAB 的位置（含拖拽记忆位置） */
+  recHud.style.left = fab.style.left; recHud.style.right = fab.style.right;
+  recHud.style.top = fab.style.top; recHud.style.bottom = fab.style.bottom;
+  recHud.classList.add('show');
+  paintRecHud(!!(ctl && ctl.paused));
+}
+function endRecord(){
+  if(!state.recording) return;
+  state.recording = false; recCtl = null;
+  recHud.classList.remove('show');
+  pickNodes().forEach(function(n){ n.classList.remove('pick-hide'); });
+  if(state.open) layout();
+}
+function setRecordPaused(paused){
+  if(!state.recording) return;
+  if(recCtl) recCtl.paused = !!paused;
+  paintRecHud(!!paused);
 }
 
 /* ---------- Popover ---------- */
@@ -156,7 +197,7 @@ function featRows(items){
   var main = items.filter(function(f){ return !f.adv; });
   var adv  = items.filter(function(f){ return f.adv; });
   return main.map(featRow).join('') +
-    (adv.length ? '<div class="adv"><button class="adv-h">' + I('chevron', 11) + ' ' + t('高级功能（' + adv.length + '）', 'Advanced (' + adv.length + ')') + '</button><div class="adv-b">' + adv.map(featRow).join('') + '</div></div>' : '');
+    (adv.length ? '<div class="adv open"><button class="adv-h">' + I('chevron', 11) + ' ' + t('高级功能（' + adv.length + '）', 'Advanced (' + adv.length + ')') + '</button><div class="adv-b">' + adv.map(featRow).join('') + '</div></div>' : '');
 }
 function featRow(f){
   return '<button class="feat" data-f="' + f.id + '"><span class="fi">' + I(f.icon, 14) + '</span>' +
@@ -273,6 +314,7 @@ B.ui = {
   layout: layout, layoutPop: layoutPop, layoutDpop: layoutDpop,
   openPanel: openPanel, closePanel: closePanel, togglePanel: togglePanel,
   hideForPick: hideForPick, showAfterPick: showAfterPick,
+  beginRecord: beginRecord, endRecord: endRecord, setRecordPaused: setRecordPaused,
   openPop: openPop, closePop: closePop, scheduleClose: scheduleClose, cancelClose: function(){ clearTimeout(hoverTimer); }, renderList: renderList,
   openDetail: openDetail, closeDetail: closeDetail, clearDetail: clearDetail, openAbout: openAbout,
   bindStatic: bindStatic, applyLang: applyLang,

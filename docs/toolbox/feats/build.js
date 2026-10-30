@@ -6,8 +6,8 @@ var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = 
 var ensurePicked = B.ensurePicked, t = B.t;
 
 /* ---------- flow 录制引擎（模块级：面板关开不影响录制；扩展版跨页由 background 续存，见 docs/spec-flow.md） ---------- */
-var REC = { on:false, name:'', desc:'', vars:{}, steps:[], url:location.href };
-var recBound = false, recListEl = null, recStatusEl = null, recPrevEl = null;
+var REC = { on:false, paused:false, name:'', desc:'', vars:{}, steps:[], url:location.href };
+var recBound = false, recListEl = null, recStatusEl = null, recPrevEl = null, recRender = null;
 var hasExt = false;
 try { hasExt = !!(window.chrome && chrome.runtime && chrome.runtime.id); } catch(e){}
 
@@ -94,8 +94,7 @@ function recDoc(){
   return { flow:(REC.name || recDefaultName()).toLowerCase(), desc:REC.desc, vars:REC.vars, steps:REC.steps };
 }
 function stepsYaml(doc){
-  var L = ['# ' + t('由工具箱操作录制生成 · schema 见 docs/spec-flow.md', 'Recorded by the toolbox · schema: docs/spec-flow.md')];
-  L.push('flow: ' + doc.flow);
+  var L = ['flow: ' + doc.flow];
   if(doc.desc) L.push('desc: ' + JSON.stringify(doc.desc));
   var vk = Object.keys(doc.vars || {});
   if(vk.length){
@@ -117,7 +116,7 @@ function stepsYaml(doc){
 function recPaint(){
   if(recStatusEl && recStatusEl.isConnected){
     recStatusEl.innerHTML = REC.on
-      ? '<span style="color:#dc2626">●</span> ' + t('录制中 · ', 'Recording · ') + REC.steps.length + t(' 步（跨页面自动续录）', ' steps (auto-resumes across pages)')
+      ? '<span style="color:#dc2626">●</span> ' + (REC.paused ? t('已暂停 · ', 'Paused · ') : t('录制中 · ', 'Recording · ')) + REC.steps.length + t(' 步（跨页面自动续录）', ' steps (auto-resumes across pages)')
       : t('未在录制', 'Not recording') + (REC.steps.length ? ' · ' + REC.steps.length + t(' 步待导出', ' steps pending export') : '');
   }
   if(recListEl && recListEl.isConnected){
@@ -157,23 +156,51 @@ function recPaint(){
   }
 }
 function recStart(){
-  REC.on = true; REC.url = location.href;
+  REC.on = true; REC.paused = false; REC.url = location.href;
   if(!REC.steps.length) REC.steps.push({ id: recNextId(), do:'nav', url:location.href }); // 起始页固定为第一步
   recBind(true); recSync(); recPaint();
+  /* 录制期间收起三层弹窗，FAB 换成「暂停 / 停止」HUD */
+  if(B.ui && B.ui.beginRecord) B.ui.beginRecord({ paused:false, onPause:recTogglePause, onStop:recStop });
 }
-function recStop(){ REC.on = false; recBind(false); recSync(); recPaint(); }
+function recTogglePause(){
+  if(!REC.on) return;
+  REC.paused = !REC.paused;
+  /* 暂停期间换页：恢复时补一条 nav，保证 flow 仍然连贯 */
+  if(!REC.paused && REC.url !== location.href) REC.steps.push({ id: recNextId(), do:'nav', url:location.href });
+  REC.url = location.href;
+  recBind(!REC.paused); recSync(); recPaint();
+  if(B.ui && B.ui.setRecordPaused) B.ui.setRecordPaused(REC.paused);
+}
+/* 停止：结果自动进剪贴板，再恢复之前的三层弹窗（详情内容同步重绘） */
+function recStop(){
+  if(!REC.on) return;
+  REC.on = false; REC.paused = false;
+  recBind(false); recSync(); recPaint();
+  var yaml = stepsYaml(recDoc());
+  function done(copied){
+    if(recRender && recStatusEl && recStatusEl.isConnected) recRender();
+    if(B.ui && B.ui.endRecord) B.ui.endRecord();
+    toast(copied
+      ? t('录制已停止，YAML 已复制到剪贴板', 'Recording stopped — YAML copied to the clipboard')
+      : t('录制已停止；自动复制失败，请在面板中点「复制 YAML」', 'Recording stopped; auto-copy failed — use "Copy YAML" in the panel'));
+  }
+  try{ copyText(yaml).then(function(){ done(true); }, function(){ done(false); }); }
+  catch(e){ done(false); }
+}
 function recReset(){
-  REC.on = false; recBind(false);
+  REC.on = false; REC.paused = false; recBind(false);
+  if(B.ui && B.ui.endRecord) B.ui.endRecord();
   REC.name = ''; REC.desc = ''; REC.vars = {}; REC.steps = []; REC.url = location.href;
   if(hasExt) flowBridge('flowrec', { op:'clear' }, 8000).catch(function(){});
   recPaint();
 }
-/* 跨页续录：工具箱每次注入问一次 background；URL 变了由 background 自动补一条 nav 步骤 */
+/* 跨页续录：工具箱每次注入问一次 background；换页且未暂停时由 background 自动补一条 nav 步骤 */
 if(hasExt) flowBridge('flowrec', { op:'get', url:location.href }, 8000).then(function(st){
   if(st && st.on){
-    REC.on = true; REC.name = st.name || ''; REC.desc = st.desc || '';
+    REC.on = true; REC.paused = !!st.paused; REC.name = st.name || ''; REC.desc = st.desc || '';
     REC.vars = st.vars || {}; REC.steps = st.steps || []; REC.url = st.url || location.href;
-    recBind(true);
+    recBind(!REC.paused);
+    if(B.ui && B.ui.beginRecord) B.ui.beginRecord({ paused:REC.paused, onPause:recTogglePause, onStop:recStop });
     setTimeout(function(){ B.w.toast(t('流程录制已恢复（' + REC.steps.length + ' 步）', 'Flow recording resumed (' + REC.steps.length + ' steps)')); }, 600);
   }
 }).catch(function(){});
@@ -433,6 +460,7 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
         });
       }
     }
+    recRender = render;
     render();
   }},
 { id:'formkit', cat:'build', name:'表单保存与填充', icon:'save', star:3, desc:'按站点保存/回填表单值；随机假数据一键填充',

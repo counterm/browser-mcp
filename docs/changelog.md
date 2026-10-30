@@ -2,6 +2,34 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-30 · feat: 录制体验——去 YAML 首行注释、录制时隐藏弹窗、暂停/停止 HUD、停止自动复制
+
+- `chrome-extension/toolbox/feats/build.js` + `docs/toolbox/feats/build.js`（两树同步）：
+  - `stepsYaml` 去掉首行 `# 由工具箱操作录制生成 · schema 见 docs/spec-flow.md`，导出/复制/入库的 YAML 直接以 `flow:` 开头
+  - 录制新增暂停态 `REC.paused`：暂停时解除页面事件监听（不记步骤），HUD 图标 pause ⇄ play；暂停期间换页的，恢复时自动补一条 `nav`
+  - 停止时 `copyText` 自动把 YAML 写入剪切板，再恢复三层弹窗并重绘录制详情；复制失败则提示用面板「复制 YAML」
+  - 跨页恢复（`flowrec get`）同样拉起 HUD，并按暂停态决定是否绑定事件
+- `chrome-extension/toolbox/ui.js` + `docs/toolbox/ui.js`（两树同步）：新增 `beginRecord/endRecord/setRecordPaused`——录制期间给 FAB/面板/列表/详情/撤销条加 `pick-hide`，右下角改显「暂停 + 停止」HUD（跟随 FAB 拖拽位置），结束后原样恢复；`togglePanel` 录制中禁用
+- `chrome-extension/toolbox/boot.js` + `docs/toolbox/boot.js`（两树同步）：录制中屏蔽 Alt+Shift+D / Esc 分级返回与「点页面收起」，避免误关隐藏中的弹窗
+- `chrome-extension/toolbox/core.js` + `docs/toolbox/core.js`（两树同步）：新增 `pause/play/stop` 图标与 `.rec-hud` 样式
+- `chrome-extension/background.js`：`flowrec get` 仅在 `on && !paused` 时补 nav 步骤，暂停期间的页面跳转不进 flow
+- 验证：两树 `node --check` 通过；生效需重载扩展并刷新页面（原型树刷新 file:// 页即可）
+
+## 2026-10-30 · feat: 工具箱「高级功能」默认展开，避免入口被折叠隐藏
+
+- `chrome-extension/toolbox/ui.js` + `docs/toolbox/ui.js`（两树同步）：`featRows` 渲染的 `.adv` 容器默认带 `open`——分类列表打开时高级功能直接可见（如 开发产物 →「操作录制 → flow」），标题仍可点击折叠；样式、星级、分组不变
+- 验证：两树 `node --check` 通过；生效需重载扩展并刷新页面（原型树刷新 file:// 页即可）
+
+## 2026-10-30 · fix: a11y 修复建议误报——按可访问名称算法判定
+
+- `chrome-extension/toolbox/feats/llm.js` + `docs/toolbox/feats/llm.js`（两树同步）：
+  - 新增 `accName()`（aria-label → aria-labelledby → 可见文本 → title → 子 img[alt] / svg title），修复 Element Plus `title="编辑" / "删除"` 图标按钮被误判“按钮无可访问名称”（实测该页 22 条误报清零）
+  - 表单检查跳过 `type=hidden` 与不可见控件（`offsetWidth/Height/clientRects` 全为 0），对 `[role=switch]` 单独检查并提示“开关缺少说明”；字段判定同时接受 aria-label / title 等名称来源，修复 `el-switch` 隐藏 checkbox 被误报为“表单字段缺标签”
+  - 面板底部“检查规则”说明同步
+  - 条目补上下文：新增 `ctx()` / `add()`，每条待办在选择器后追加“（所在：…）”——向上最多 5 层取第一段非空文本并截断 36 字，开关可直接看出属于哪张应用卡片
+- 验证：两树 `node --check` 通过；在 192.168.90.68:19848 应用列表页实测——img 0 / 按钮 0 / 链接缺 href 0，剩余 11 条开关（各带卡片应用名，如“📱统一认证系统 …”）+ 1 条 el-select 输入框（所在“11条/页”，即分页每页条数），均为真实缺名称项
+- 生效条件：重载扩展并刷新页面（原型树刷新 file:// 页即可）
+
 ## 2026-10-29 · feat: YAML 测试流（flow）编排扩展——子流程与数据驱动
 
 - `broker.py`：

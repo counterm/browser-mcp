@@ -681,7 +681,7 @@ async function handleFlowRec(msg, tabId, sendResponse) {
     if (msg.op === 'get') {
       const o = await chrome.storage.session.get(key);
       const st = o[key] || null;
-      if (st && st.on) {
+      if (st && st.on && !st.paused) {
         const url = msg.url || '';
         if (url && st.url && st.url !== url) {
           const n = st.steps.length + 1;

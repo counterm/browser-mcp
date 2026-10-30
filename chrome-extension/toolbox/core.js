@@ -75,7 +75,10 @@ B.ICONS = {
   image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5L5 19"/>',
   crop:'<path d="M7 2v13a2 2 0 002 2h13"/><path d="M2 7h13a2 2 0 012 2v13"/>',
   qr:'<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13 13h3v3h-3zM19 13h2v2h-2zM13 19h3v2h-3zM19 19h2"/>',
-  save:'<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>'
+  save:'<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>',
+  pause:'<path d="M9 5v14M15 5v14"/>',
+  play:'<path d="M8 5l11 7-11 7z"/>',
+  stop:'<rect x="6" y="6" width="12" height="12" rx="2"/>'
 };
 B.I = function(name, size){ return '<svg viewBox="0 0 24 24" width="'+(size||16)+'" height="'+(size||16)+'" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(B.ICONS[name]||'')+'</svg>'; };
 
@@ -135,7 +138,7 @@ healTimer = setInterval(mount, 1000);
 /* ---------- Shadow 样式 ---------- */
 var WCSS = `
 *{box-sizing:border-box;margin:0;padding:0}
-.fab,.panel,.pop,.pill-u,.toast,.coach,.picker-ov,.picker-box,.picker-tip{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.fab,.panel,.pop,.pill-u,.toast,.coach,.rec-hud,.picker-ov,.picker-box,.picker-tip{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 /* FAB */
 .fab{position:fixed;right:24px;bottom:24px;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;cursor:pointer;pointer-events:auto;color:#e5e7eb;background:linear-gradient(135deg,#1f2937,#0f172a);border:1px solid rgba(255,255,255,.16);box-shadow:0 10px 28px rgba(2,6,23,.45);transition:transform .18s ease,box-shadow .18s ease;z-index:10}
 .fab:hover{transform:scale(1.07)}
@@ -144,6 +147,13 @@ var WCSS = `
 .fab.on{background:linear-gradient(135deg,#312e81,#1e1b4b);border-color:rgba(165,180,252,.5)}
 .fab .ic{transition:transform .2s ease}
 .fab.on .ic{transform:rotate(90deg)}
+/* 录制 HUD（替代 FAB）：暂停 / 停止；录制期间三层弹窗与撤销条由 ui 隐藏 */
+.rec-hud{position:fixed;right:24px;bottom:24px;display:none;align-items:center;gap:4px;padding:4px;border-radius:99px;background:rgba(15,23,42,.94);border:1px solid rgba(255,255,255,.16);box-shadow:0 10px 28px rgba(2,6,23,.45);backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);z-index:10;pointer-events:auto}
+.rec-hud.show{display:flex}
+.rec-hud .rh{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e5e7eb;cursor:pointer;transition:background .15s}
+.rec-hud .rh:hover{background:rgba(255,255,255,.14)}
+.rec-hud .rh-s{background:rgba(239,68,68,.92);border-color:rgba(239,68,68,.9);color:#fff}
+.rec-hud .rh-s:hover{background:#dc2626}
 /* 面板 */
 .panel{position:fixed;width:212px;padding:13px;border-radius:18px;color:#e5e7eb;background:rgba(15,23,42,.92);border:1px solid rgba(255,255,255,.12);box-shadow:0 18px 50px rgba(2,6,23,.5);backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);opacity:0;transform:scale(.9) translateY(10px);transform-origin:bottom right;pointer-events:none;transition:opacity .16s ease,transform .18s cubic-bezier(.2,.9,.3,1.2);z-index:20}
 .panel.open{opacity:1;transform:none;pointer-events:auto}

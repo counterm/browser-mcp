@@ -188,15 +188,54 @@ t('GET  ' + broker + '/marks    # 列出全部标记 → 网址', 'GET  ' + brok
 { id:'a11y', cat:'llm', grp:'copy', name:'a11y 修复建议', en:{ name:'a11y Fix Suggestions', desc:'Collect accessibility issues as a to-do list for the LLM' }, icon:'person', star:1, desc:'整理可访问性缺陷为待办，可复制给 LLM', adv:true,
   run:function(b){
     var todos = [];
-    $$('img').forEach(function(e){ if(!e.alt) todos.push(t('img 缺少 alt：', 'img missing alt: ') + bestSelector(e)); });
+    /* 可访问名称近似计算（同名算法简化版）：aria-label → aria-labelledby → 可见文本 → title → 子 img[alt] / svg title。
+       只看 textContent 会把 Element Plus 的 title 型图标按钮误判为无名称。 */
+    function accName(e){
+      var s = (e.getAttribute('aria-label') || '').trim();
+      if(s) return s;
+      var lb = (e.getAttribute('aria-labelledby') || '').trim();
+      if(lb){
+        s = lb.split(/\s+/).map(function(id){ var n = document.getElementById(id); return n ? (n.textContent || '').trim() : ''; }).join(' ').trim();
+        if(s) return s;
+      }
+      s = (e.textContent || '').trim();
+      if(s) return s;
+      s = (e.getAttribute('title') || '').trim();
+      if(s) return s;
+      var img = e.querySelector('img[alt]');
+      if(img && (img.getAttribute('alt') || '').trim()) return img.getAttribute('alt').trim();
+      var st = e.querySelector('svg title');
+      if(st && (st.textContent || '').trim()) return st.textContent.trim();
+      return '';
+    }
+    function shown(e){ return !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length); }
+    /* 条目上下文：向上找第一个有文字（≤5 层）的祖先并截断，便于 LLM 认出是哪个区域的控件 */
+    function ctx(e){
+      var n = e;
+      for(var i = 0; i < 5 && n; i++){
+        var s = (n.textContent || '').replace(/\s+/g, ' ').trim();
+        if(s) return s.length > 36 ? s.slice(0, 36) + '…' : s;
+        n = n.parentElement;
+      }
+      return '';
+    }
+    function add(label, e){
+      var c = ctx(e);
+      todos.push(label + bestSelector(e) + (c ? t('（所在：', ' (in: ') + c + t('）', ')') : ''));
+    }
+    $$('img').forEach(function(e){ if(!e.alt) add(t('img 缺少 alt：', 'img missing alt: '), e); });
     $$('button,a[role=button]').forEach(function(e){
-      if(!(e.textContent || '').trim() && !e.getAttribute('aria-label')) todos.push(t('按钮无可访问名称：', 'button has no accessible name: ') + bestSelector(e));
+      if(!accName(e)) add(t('按钮无可访问名称：', 'button has no accessible name: '), e);
     });
     $$('input,select,textarea').forEach(function(e){
-      var has = (e.labels && e.labels.length) || e.getAttribute('aria-label') || e.getAttribute('placeholder');
-      if(!has) todos.push(t('表单字段缺标签：', 'form field missing label: ') + bestSelector(e));
+      if(e.type === 'hidden' || e.getAttribute('role') === 'switch' || !shown(e)) return; // 隐藏控件 / 开关另算
+      var has = (e.labels && e.labels.length) || accName(e) || e.getAttribute('placeholder');
+      if(!has) add(t('表单字段缺标签：', 'form field missing label: '), e);
     });
-    $$('a').forEach(function(e){ if(!e.getAttribute('href')) todos.push(t('链接缺 href：', 'link missing href: ') + bestSelector(e)); });
+    $$('[role=switch]').forEach(function(e){
+      if(!accName(e)) add(t('开关缺少说明：', 'switch missing accessible name: '), e);
+    });
+    $$('a').forEach(function(e){ if(!e.getAttribute('href')) add(t('链接缺 href：', 'link missing href: '), e); });
     var d = el('div', 'lst');
     if(todos.length) todos.forEach(function(todo){ d.appendChild(el('div', 'li', '<span class="u">' + esc(todo) + '</span>')); });
     else d.appendChild(el('div', 'li', '<span class="u">' + t('未发现明显缺陷', 'No obvious issues found') + '</span>'));
@@ -205,8 +244,8 @@ t('GET  ' + broker + '/marks    # 列出全部标记 → 网址', 'GET  ' + brok
       var txt = todos.join('\n');
       b.appendChild(el('div', 'row2')).appendChild(btn(t('复制待办清单给 LLM', 'Copy To-Do List for LLM'), function(){ copyText(txt).then(function(){ toast(t('已复制 ' + todos.length + ' 条', 'Copied ' + todos.length + ' items')); }); }, 'pri'));
     }
-    b.appendChild(note(t('检查规则：img alt / 按钮名称 / 字段标签 / 链接 href。可接 axe-core 增强。',
-      'Checks: img alt / button name / field label / link href. Can plug in axe-core for deeper checks.')));
+    b.appendChild(note(t('检查规则：img alt / 按钮名称（含 title、aria-labelledby、子图 alt）/ 字段标签 / 开关说明 / 链接 href。可接 axe-core 增强。',
+      'Checks: img alt / button name (incl. title, aria-labelledby, nested img alt) / field label / switch name / link href. Can plug in axe-core for deeper checks.')));
   }}
 ]);
 })(window.BATB);

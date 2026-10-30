@@ -85,6 +85,7 @@ clampFab();
 
 /* ---------- 全局热键 / Esc 分级返回：详情浮层 → 列表 Popover → 面板 ---------- */
 window.addEventListener('keydown', function(e){
+  if(state.recording) return; /* 录制中只响应 HUD（暂停 / 停止），屏蔽热键与 Esc 分级返回 */
   if(e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')){ e.preventDefault(); ui.togglePanel(); if(state.open) localStorage.setItem('ba-tbx-seen', '1'); }
   if(e.key === 'Escape'){
     if(sq('.picker-ov')) return; // 拾取器自行处理
@@ -97,6 +98,7 @@ window.addEventListener('resize', function(){ if(state.open) ui.layout(); });
 
 /* ---------- 点击页面其他位置收起 ---------- */
 document.addEventListener('pointerdown', function(e){
+  if(state.recording) return; /* 录制中页面点击是录制目标，不收起弹窗 */
   if(!state.open) return;
   if(sq('.picker-ov')) return; // 拾取中：页面上的点击是「选中元素」，不是「点空白收起」
   if(B.host.contains(e.target)) return;
