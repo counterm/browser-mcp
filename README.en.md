@@ -8,6 +8,8 @@ Pages are turned into text (no screenshot-dependent multimodality); the LLM loca
 
 Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 
+> ⚠️ **Work in progress**: This project is in **active development (v0.1.x)**. Interfaces, commands and extension behavior may change without prior notice and are **not guaranteed to be backward compatible**. Do not use it in critical production environments; verify with the "Quick start" steps before integrating, and watch `docs/changelog.md` for updates. The extension is a developer-mode "Load unpacked" solution — it has not been store-reviewed or hardened for stability.
+
 ```
             Browser (N tabs)                   Local machine                MCP client (IDE / Agent / CLI)
 ┌──────────────────────────┐         ┌────────────────────────┐        ┌─────────────────────────────┐
