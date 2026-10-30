@@ -5,6 +5,7 @@
 
 按日期倒序，每条独立存放于 `changelog/`：
 
+- [2026-10-30 · fix: 「运行 flow」磁贴补上 YAML 粘贴直接运行入口](./changelog/2026-10-30-fix： 「运行 flow」磁贴补上 YAML 粘贴直接运行入口.md)
 - [2026-10-30 · refactor: flow 执行整体迁入浏览器扩展，broker 退化为纯传输](./changelog/2026-10-30-refactor： flow 执行整体迁入浏览器扩展，broker 退化为纯传输.md)
 - [2026-10-30 · feat: 新增「运行 flow」磁贴，执行入口不再藏在录制详情底部](./changelog/2026-10-30-feat： 新增「运行 flow」磁贴，执行入口不再藏在录制详情底部.md)
 - [2026-10-30 · feat: 录制体验——去 YAML 首行注释、录制时隐藏弹窗、暂停/停止 HUD、停止自动复制](./changelog/2026-10-30-feat： 录制体验——去 YAML 首行注释、录制时隐藏弹窗、暂停、停止 HUD、停止自动复制.md)

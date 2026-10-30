@@ -484,17 +484,36 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
     recRender = render;
     render();
   }},
-{ id:'runflow', cat:'build', name:'运行 flow', icon:'play', star:2, desc:'在当前离线页面执行 flow，实时进度与逐步报告',
-  en:{ name:'Run Flow', desc:'Run a flow on the current page with live progress and per-step reports' },
+{ id:'runflow', cat:'build', name:'运行 flow', icon:'play', star:2, desc:'粘贴 YAML 或从库选 flow，在当前页执行，实时进度与逐步报告',
+  en:{ name:'Run Flow', desc:'Paste YAML or pick a library flow, run it on the current page with live progress and per-step reports' },
   run:function(b){
     function render(){
       b.innerHTML = '';
-      if(!hasExt){
-        b.appendChild(note(t('原型环境（无扩展桥）：请用 CLI 执行 —— python cli_client.py flow <本地.yaml> --page <标记>；扩展版可直接在此运行。',
-          'Prototype environment (no extension bridge): run via CLI — python cli_client.py flow <local.yaml> --page <mark>; the extension build can run here directly.')));
-        return;
-      }
-      b.appendChild(note(t('使用当前页的页桥标记执行；页面需已接入白名单。', 'Runs with the current page mark; the page must be allowlisted.')));
+      b.appendChild(hasExt
+        ? note(t('使用当前页的页桥标记执行；页面需已接入白名单。', 'Runs with the current page mark; the page must be allowlisted.'))
+        : note(t('原型环境（无扩展桥）：可以粘贴 YAML，但运行需要扩展版；CLI 亦可 —— python cli_client.py flow <本地.yaml> --page <标记>。',
+          'Prototype environment (no extension bridge): pasting works, but running needs the extension build; the CLI also works — python cli_client.py flow <local.yaml> --page <mark>.')));
+
+      /* ---- 直接运行：粘贴 YAML（不入库） ---- */
+      b.appendChild(el('div', 'grp-h', t('直接运行（粘贴 YAML）', 'Run now (paste YAML)')));
+      var ta = el('textarea');
+      ta.placeholder = t('粘贴 flow YAML（导出的或手写的），点「运行」在当前页执行，不写入库。', 'Paste flow YAML (exported or hand-written), then "Run" executes it on this page without saving.');
+      ta.style.cssText = 'width:100%;min-height:80px;padding:5px;font-size:11px;font-family:monospace;margin-bottom:6px';
+      b.appendChild(ta);
+      var runOut = el('div');
+      var acts = el('div');
+      acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px';
+      acts.appendChild(btn(t('运行', 'Run'), function(){
+        var y = ta.value.trim();
+        if(!y){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
+        if(!hasExt){ toast(t('运行需要扩展版；原型请用 CLI', 'Running needs the extension build; use the CLI in the prototype')); return; }
+        runFlowReq({ yaml:y }, runOut);
+      }));
+      acts.appendChild(btn(t('清空', 'Clear'), function(){ ta.value = ''; runOut.innerHTML = ''; }));
+      b.appendChild(acts);
+      b.appendChild(runOut);
+      if(!hasExt) return;
+
       var out = el('div');
       b.appendChild(out);
       b.appendChild(el('div', 'grp-h', t('flow 库（浏览器本地）', 'Flow library (browser-local)')));
