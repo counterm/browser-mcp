@@ -24,11 +24,11 @@ Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 | File | Purpose |
 |---|---|
 | `broker.py` | Local registry / broadcast / forwarding hub, **and an MCP server at the same time**. Keeps the online-page table, forwards external commands to the right page and waits for results. When accessed via MCP it *is* the MCP server process; **the only process that must stay running** |
-| `requirements.txt` | Python dependencies for the broker (aiohttp; pyyaml for the flow feature) |
+| `requirements.txt` | Python dependencies for the broker (aiohttp; YAML parsing lives in the extension, no pyyaml) |
 | `.mcp.json` | The machine-local MCP client config (stdio; the MCP client launches the broker automatically) |
 | `.mcp.example.json` | A copyable MCP config template — change the path in `args` to your own absolute `broker.py` path |
 | `cli_client.py` | Reference external CLI client (stdlib only): discover → validate URL → attach → LLM-driven loop; the `flow` subcommand runs YAML test flows (CI entry point) |
-| `flows/` | The flow library (source of truth for YAML test flows, Git-friendly; run reports go to `.flows/`, see `docs/spec-flow.md`) |
+| `flows/` | A single example YAML for the CLI (the real flow library lives in the extension's `chrome.storage`, see `docs/spec-flow.md`) |
 | `chrome-extension/` | Connector option A (recommended): Chrome extension MV3 |
 | ├ `manifest.json` | Extension manifest: permissions, injection rules (`<all_urls>`, excluding the broker's own port), action popup, options page |
 | ├ `background.js` | Service worker: one WebSocket per tab to the broker; command routing (DOM actions go to content, screenshots/tab management run here); site allowlist filtering; webRequest observational capture of API calls (URL/request headers/request body/response headers) |
@@ -37,7 +37,9 @@ Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 | ├ `options.html` / `options.js` | Full settings page: CRUD for domain list and regex rules, import/export, live regex tester |
 | ├ `capture-main.js` | Page capture layer (injected into MAIN world at `document_start`): wraps fetch/XHR to capture request/response bodies and merges them with header records from the bg webRequest layer; also hooks `console` / uncaught exceptions / failed resource loads / CSP and writes to `__BATB_LOG__` for `plog` queries. The API part is shared by the "API Calls" tool and the `netlog` protocol (see `docs/spec-net-protocol.md`) |
 | ├ `content.js` | Content script: one instance per tab, responsible for DOM snapshots and action execution (click/type/eval, etc.); also relays extension-bridge messages for the in-page toolbox (`batb:bridge` → background) and forwards LLM `netlog` / `plog` queries to the page capture layer |
-| └ `toolbox/` | In-page toolbox (production build of the design prototype in `docs/toolbox/`): 14 zero-build modules injected into the page MAIN world by background according to the allowlist; six categories, 36 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture) |
+| ├ `flowrun.js` | Flow runner (content script): parses YAML (`vendor/js-yaml.min.js`), executes steps, assertions / retries / data rows / subflows, and resumes after cross-page navigation; reports progress and results to the broker via background |
+| ├ `vendor/js-yaml.min.js` | js-yaml 4.1.0 bundled with the extension (shared by content and background; no network, no Python) |
+| └ `toolbox/` | In-page toolbox (production build of the design prototype in `docs/toolbox/`): 14 zero-build modules injected into the page MAIN world by background according to the allowlist; six categories, 37 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture) |
 | `page-bridge.user.js` | Legacy userscript version, **unmaintained, kept for archive only**; always use the Chrome extension for connecting |
 | `docs/spec-flow.md` | YAML test-flow spec: schema, execution semantics, assertions, MCP/HTTP/CLI interfaces |
 | `docs/research/1.md` | Early research notes (how console injection works and where it hurts) |
@@ -148,10 +150,10 @@ The MCP tools are a thin layer over these HTTP endpoints; scripts, custom orches
 | `GET /marks` | List all page-bridge marks: `mark` / `online` / `pid` / `url` / `title` |
 | `GET /mark/{mark}` | Look up a page by mark: returns online state, `pid`, URL, title (last known URL when offline) |
 | `POST /mark/{mark}` | Execute a command by mark (body same as `/call/{pid}`, e.g. `{"action":"snapshot"}`) |
-| `GET /flows` | Flow library listing (YAML test flows, [docs/spec-flow.md](docs/spec-flow.md)) |
-| `POST /flows/run` | Run a flow: body `{name or yaml, page?, vars?, from_step?, stop_on_fail?, mode?}`; by default waits and returns the step-by-step report JSON (saved under `.flows/`); `mode:"async"` returns `{run_id, ...}` immediately |
-| `GET /flows/status` | Poll async run progress: `?run_id=xxx&wait_ms=0`; the full report is included once done |
-| `GET|PUT|DELETE /flow/{name}` | Read / save (body `{"yaml": "..."}`, parsed + validated into `flows/<name>.yaml`) / delete a flow |
+| `GET /flows` | Flow library listing (the library lives in the extension, broker relays, [docs/spec-flow.md](docs/spec-flow.md)) |
+| `POST /flows/run` | Run a flow: body `{name or yaml, page?, vars?, from_step?, stop_on_fail?, mode?}`; the broker relays it to the page extension, which executes it. Default waits for the report; `mode:"async"` returns `{run_id, ...}` immediately |
+| `GET /flows/status` | Poll async run progress: `?run_id=xxx&wait_ms=0`; the full report is included once done (kept in broker memory) |
+| `GET|PUT|DELETE /flow/{name}` | Read / save (body `{"yaml": "..."}`, validated extension-side into the extension library) / delete a flow |
 | `WS /client` | Long-lived connection: broadcasts + attach + bidirectional command stream (good for resident sessions) |
 
 ```powershell
@@ -202,9 +204,9 @@ Locate an element by one of three params: `bid` = element number from a snapshot
 
 ### YAML test flows (flow)
 
-Orchestrate page-action sequences as YAML and let the broker execute them step by step with a summary report —
-a lightweight Playwright replacement: **no Node required**; the broker (Python + pyyaml) parses the YAML and
-dispatches the commands from the table above, the extension stays a pure executor.
+Orchestrate page-action sequences as YAML — a lightweight Playwright replacement: **no Node required**.
+The YAML is parsed and executed inside the **browser extension** (`flowrun.js` + `vendor/js-yaml`);
+the broker only transports (LLM → broker → browser) and aggregates progress. It never parses YAML or writes files.
 
 ```yaml
 flow: demo-login
@@ -226,10 +228,12 @@ steps:
     max_wait_ms: 8000
 ```
 
-- **Run**: MCP `flow {op:"run", name:"demo-login"}` or CLI `python cli_client.py flow flows/demo-login.yaml` (CI entry point; exit code 0/1)
-- **Report**: per step `{id, do, values, ok, ms, url, error?}`, auto screenshot on failure; saved under `.flows/` and returned in one shot (the LLM reads it directly)
+- **Run**: MCP `flow {op:"run", name:"demo-login"}`, CLI `python cli_client.py flow <local.yaml>`, or the toolbox's
+  "Run without saving"; the executor is the extension script inside the target page, and it resumes across navigations
+- **Report**: per step `{id, do, values, ok, ms, url, error?}`; failures auto-screenshot (dataUrl inline, nothing written to disk) and the report is returned in one shot (the LLM reads it directly)
 - **Trace**: each step prints `[flow:<name>] s03 click … → OK 340ms` to the page console; the LLM can pull it via `page_logs {q:"[flow:"}`
-- **Library**: `op=list/get/save/delete`; the source of truth is `flows/*.yaml` (Git-friendly); HTTP endpoints in the table above
+- **Library**: `op=list/get/save/delete`; the source of truth is the **extension-local library** (`chrome.storage.local.flows`) —
+  operations only need the broker plus the extension; `${env.X}` resolves from the extension's `flowenv` config
 
 Full schema / variable substitution / secret masking / semantics and limits in **[docs/spec-flow.md](docs/spec-flow.md)**; example in `flows/demo-smoke.yaml`.
 
@@ -269,7 +273,7 @@ An in-page tool panel injected according to the allowlist; the design prototype 
 
 - **Injection**: once a page matches the allowlist, background injects the 14 modules under `chrome-extension/toolbox/` into the **page MAIN world** via `chrome.scripting` — React fiber lookups, fetch interception and `window.__BA_*` are only visible in the page context; injection is not limited by page CSP
 - **Gating takes effect immediately**: after allowlist changes, injected pages show/hide in sync via the DOM event `batb:gate` — leaving the allowlist hides the toolbox instantly, matching again restores it; matching pages that were never injected get injected on the fly
-- **Entry point**: circular FAB at the bottom-right (draggable, position remembered, `Alt+Shift+D` to toggle); six categories, 36 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture)
+- **Entry point**: circular FAB at the bottom-right (draggable, position remembered, `Alt+Shift+D` to toggle); six categories, 37 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture)
 - **Bilingual (Chinese / English)**: the "EN / 中文" button at the bottom of the panel switches languages with one click; Chinese is the default and the choice is stored in `localStorage` across reloads. Categories, feature names and descriptions, result cards and prompts all have English versions
 - **Capture**: "URL QR Code" generates a QR code for the current URL entirely locally (scan to open on your phone, download as PNG / copy the link; embeds a trimmed MIT build of [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator)); "Full-page Screenshot" scrolls and captures screen by screen, stitches a long image and downloads it as PNG; "Container Screenshot" picks any element — for a scrollable container it captures the container's entire scroll range (locating the scrolling ancestor, clipping and stitching screen by screen), for a plain element it captures the currently visible area — both screenshot modes handle floating elements automatically (fixed elements are temporarily hidden, sticky elements temporarily unstick, then restored) to avoid repeats on every screen; "API Calls" captures requests in two layers — the page capture layer (`capture-main.js`, wrapping fetch/XHR at document_start) grabs request/response bodies while the webRequest observational mode grabs all request headers (including Cookie/Authorization), merged by URL + time; open a list item to **copy debug text / copy cURL** for the LLM (auth fields such as Cookie/token are masked by default, and this can be turned off). Both screenshot features go through the **extension bridge** (content.js relays `batb:bridge` → background `captureVisibleTab`), so content.js must match the extension version (refresh the page after updating the extension)
 - **LLM viewing channel for API calls**: the LLM sends the `netlog` command through the broker to query captured records on its own (`list` summaries → `get` details / `curl` replay, no manual clicking); the protocol and its limits are documented in `docs/spec-net-protocol.md`

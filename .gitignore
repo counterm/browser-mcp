@@ -10,8 +10,7 @@ __pycache__/
 # MCP screenshot 工件 (page_call screenshot 落盘目录)
 .screenshots/
 
-# flow 运行报告存档（docs/spec-flow.md；flows/*.yaml 是库本体，照常入库）
-.flows/
+# flow 库与报告都在浏览器扩展本地（chrome.storage），不留本地文件
 
 # 本地产物（打包 / 私钥等，不入库）
 build/

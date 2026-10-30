@@ -12,12 +12,14 @@
 const CFG = { host: '127.0.0.1', port: 8766, hbMs: 5000 };
 
 importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
+importScripts('vendor/js-yaml.min.js'); // flow 库写入时的 YAML 解析 / 校验（与页面内执行器同款）
 
 const CONTENT_ACTIONS = [
   'ping', 'snapshot', 'dom', 'click', 'type', 'press', 'select', 'scroll', 'hover',
   'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog', 'plog', 'log',
 ];
-const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
+const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate',
+  'flow_run', 'flow_lib'];
 const CAPS = [...CONTENT_ACTIONS, ...EXTRA_ACTIONS];
 
 /** tabId -> {tabId,url,title,viewport,ws,pageId,mark,fails,hb,retryTimer,closed} */
@@ -635,6 +637,29 @@ const BACKGROUND_ACTIONS = {
     await sleep(150);
     return `activated tab ${tid}`;
   },
+
+  /** broker 下发 flow 执行：取库里的 YAML（或内联），交给本页 flowrun.js 启动，立即返回受理信息 */
+  flow_run: async (cmd, e) => {
+    let text = cmd.yaml;
+    if (!text && cmd.name) {
+      const rec = (await flowLibAll())[cmd.name];
+      if (!rec) throw new Error(`flow 不存在：${cmd.name}（库在扩展本地，用 flow_lib list 查看）`);
+      text = rec.yaml;
+    }
+    if (!text || typeof text !== 'string') throw new Error('需要 name 或 yaml 之一');
+    const env = (await chrome.storage.local.get('flowenv')).flowenv || {};
+    const tcmd = {
+      action: 'start', yaml: text, env,
+      vars: cmd.vars || {}, from_step: cmd.from_step || null,
+      stop_on_fail: cmd.stop_on_fail !== false,
+    };
+    const res = await chrome.tabs.sendMessage(e.tabId, { __flow_cmd: tcmd });
+    if (!res || !res.ok) throw new Error((res && res.error) || '内容脚本未响应（刷新页面后重试）');
+    return res.data;
+  },
+
+  /** broker 下发 flow 库操作（扩展本地库，无 broker 存储） */
+  flow_lib: async (cmd) => flowLibOp(cmd),
 };
 
 /* ============ 工具箱桥：flow（YAML 测试流）库与录制续存（docs/spec-flow.md） ============ */
@@ -657,17 +682,106 @@ async function brokerFetch(method, path, body) {
   return data;
 }
 
+/* ---- flow 库：扩展本地 chrome.storage.local（name -> {yaml, ts}），broker 不存文件 ---- */
+const FLOWS_KEY = 'flows';
+const FLOW_RUN_KEY = (tabId) => 'flowrun:' + tabId;
+
+async function flowLibAll() {
+  const o = await chrome.storage.local.get(FLOWS_KEY);
+  return o[FLOWS_KEY] || {};
+}
+
+/** 保存前的最小 schema 校验（与 flowrun.js 同一套规则；执行时还会再校验一次） */
+function flowLibValidate(text, wantName) {
+  let doc;
+  try { doc = jsyaml.load(text); } catch (e) { throw new Error('YAML 解析失败：' + ((e && e.message) || e)); }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('flow 文档必须是映射');
+  const name = doc.flow;
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(name || ''))) {
+    throw new Error('flow 名非法（小写字母/数字/-/_，≤64 字符）：' + JSON.stringify(name));
+  }
+  if (wantName && name !== wantName) throw new Error(`flow 名与保存名不一致：${name} ≠ ${wantName}`);
+  if (!Array.isArray(doc.steps) || !doc.steps.length) throw new Error('steps 必须是非空列表');
+  const seen = new Set();
+  doc.steps.forEach((s, i) => {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error(`steps[${i}] 必须是映射`);
+    if (typeof s.id !== 'string' || !s.id) throw new Error(`steps[${i}] 缺 id（字符串）`);
+    if (seen.has(s.id)) throw new Error('步骤 id 重复：' + s.id);
+    seen.add(s.id);
+    if (typeof s.do !== 'string' || !s.do) throw new Error(`步骤 ${s.id} 缺 do`);
+  });
+  if (doc.data_file != null) throw new Error('浏览器内执行不支持 data_file（请把数据内联到 data）');
+  if (doc.data != null && (!Array.isArray(doc.data) || !doc.data.length || doc.data.length > 200)) {
+    throw new Error('data 必须是非空列表且最多 200 组');
+  }
+  return doc;
+}
+
+/** flow 库操作（broker 的 /flows 系列与工具箱 tb:flow 共用） */
+async function flowLibOp(cmd) {
+  const all = await flowLibAll();
+  switch (cmd.op) {
+    case 'list':
+      return Object.keys(all).sort().map((name) => {
+        const rec = all[name] || {};
+        const meta = { name, mtime: Math.round((rec.ts || 0) / 1000) };
+        try {
+          const doc = jsyaml.load(rec.yaml || '');
+          meta.desc = doc && doc.desc;
+          meta.steps = Array.isArray(doc && doc.steps) ? doc.steps.length : 0;
+        } catch { meta.broken = true; }
+        return meta;
+      });
+    case 'get': {
+      const rec = all[cmd.name];
+      if (!rec) throw new Error(`flow 不存在：${cmd.name}（库在扩展本地）`);
+      return { name: cmd.name, yaml: rec.yaml };
+    }
+    case 'save': {
+      const text = String(cmd.yaml || '');
+      if (!text.trim()) throw new Error('需要 {"yaml": "..."}');
+      const doc = flowLibValidate(text, cmd.name);
+      all[doc.flow] = { yaml: text.endsWith('\n') ? text : text + '\n', ts: Date.now() };
+      await chrome.storage.local.set({ [FLOWS_KEY]: all });
+      return { ok: true, name: doc.flow, steps: doc.steps.length };
+    }
+    case 'delete':
+      if (!all[cmd.name]) throw new Error(`flow 不存在：${cmd.name}`);
+      delete all[cmd.name];
+      await chrome.storage.local.set({ [FLOWS_KEY]: all });
+      return { ok: true };
+    // 运行 / 进度：经 broker 传输（broker 只转发给页面，不解析 YAML）
+    case 'run':
+      return brokerFetch('POST', '/flows/run', {
+        name: cmd.name, yaml: cmd.yaml, page: cmd.mark,
+        vars: cmd.vars, from_step: cmd.from_step,
+        stop_on_fail: cmd.stop_on_fail !== false, mode: 'async',
+      });
+    case 'status':
+      return brokerFetch('GET', `/flows/status?run_id=${encodeURIComponent(cmd.run_id || '')}&wait_ms=${Math.min(Math.max(+cmd.wait_ms || 0, 0), 30000)}`);
+    default:
+      throw new Error(`unknown op: ${cmd.op}`);
+  }
+}
+
 async function handleFlowBridge(msg, sendResponse) {
+  try { sendResponse({ ok: true, data: await flowLibOp(msg) }); }
+  catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+}
+
+/** flowrun.js 运行状态续存（chrome.storage.session 按 tab，跨导航存活；tab 关闭即清） */
+async function handleFlowState(msg, tabId, sendResponse) {
   try {
-    let data;
-    if (msg.op === 'list') data = await brokerFetch('GET', '/flows');
-    else if (msg.op === 'get') data = await brokerFetch('GET', `/flow/${encodeURIComponent(msg.name)}`);
-    else if (msg.op === 'save') data = await brokerFetch('PUT', `/flow/${encodeURIComponent(msg.name)}`, { yaml: msg.yaml });
-    else if (msg.op === 'delete') data = await brokerFetch('DELETE', `/flow/${encodeURIComponent(msg.name)}`);
-    else if (msg.op === 'run') data = await brokerFetch('POST', '/flows/run', { name: msg.name, page: msg.mark, stop_on_fail: msg.stop_on_fail !== false, mode: 'async' });
-    else if (msg.op === 'status') data = await brokerFetch('GET', `/flows/status?run_id=${encodeURIComponent(msg.run_id || '')}&wait_ms=${Math.min(Math.max(+msg.wait_ms || 0, 0), 30000)}`);
-    else throw new Error(`unknown op: ${msg.op}`);
-    sendResponse({ ok: true, data });
+    if (msg.type === 'flow_save') {
+      await chrome.storage.session.set({ [FLOW_RUN_KEY(tabId)]: msg.state || null });
+      sendResponse({ ok: true });
+    } else if (msg.type === 'flow_clear') {
+      await chrome.storage.session.remove(FLOW_RUN_KEY(tabId));
+      sendResponse({ ok: true });
+    } else { // flow_resume
+      const o = await chrome.storage.session.get(FLOW_RUN_KEY(tabId));
+      sendResponse({ ok: true, data: o[FLOW_RUN_KEY(tabId)] || null });
+    }
   } catch (e) {
     sendResponse({ ok: false, error: String((e && e.message) || e) });
   }
@@ -746,12 +860,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === 'tb:flow') {
-    handleFlowBridge(msg, sendResponse); // flow 库（broker HTTP 直连）
+    handleFlowBridge(msg, sendResponse); // flow 库（扩展本地存储；运行经 broker 转发）
     return true;
   }
   if (msg && msg.type === 'tb:flowrec') {
     handleFlowRec(msg, sender.tab && sender.tab.id, sendResponse); // 录制会话续存
     return true;
+  }
+  if (msg && msg.type === 'flow_lib') {
+    // flowrun.js 读取库（子流程 / 按名启动）与写入；与 broker 走的 flow_lib 动作同一实现
+    flowLibOp(msg).then(
+      (data) => sendResponse({ ok: true, data }),
+      (err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+  if (msg && (msg.type === 'flow_save' || msg.type === 'flow_clear' || msg.type === 'flow_resume')) {
+    const ftab = sender.tab && sender.tab.id;
+    if (ftab == null) { sendResponse({ ok: false, error: 'no tab' }); return; }
+    handleFlowState(msg, ftab, sendResponse); // 运行状态续存（flowrun.js）
+    return true;
+  }
+  if (msg && msg.type === 'flow_bg') {
+    // flowrun.js 请求浏览器级动作（截图 / eval / tab_*）
+    const ftab = sender.tab && sender.tab.id;
+    const ent = ftab == null ? null : tabs.get(ftab);
+    if (!ent) { sendResponse({ ok: false, error: '页面未接入（不在白名单或 tab 已关闭）' }); return; }
+    const p = msg.params || {};
+    // eval 走 userScripts 通道（绕页面 CSP），与 broker 下发的 eval 同一条实现
+    const fn = BACKGROUND_ACTIONS[msg.action] || (msg.action === 'eval' ? () => doEval(ent, p.code || '') : null);
+    if (!fn) { sendResponse({ ok: false, error: 'unknown action: ' + msg.action }); return; }
+    Promise.resolve(fn(p, ent)).then(
+      (data) => sendResponse({ ok: true, data: data === undefined ? null : data }),
+      (err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+  if (msg && (msg.type === 'flow_progress' || msg.type === 'flow_report')) {
+    // 进度 / 报告经本 tab 的页面 WS 上报 broker（broker 只做传输与内存状态）
+    const ftab = sender.tab && sender.tab.id;
+    const ent = ftab == null ? null : tabs.get(ftab);
+    if (ent) {
+      sendWS(ent, msg.type === 'flow_report'
+        ? { type: 'flow_report', run_id: msg.run_id, report: msg.report }
+        : { type: 'flow_progress', ...(msg.progress || {}) });
+    }
+    sendResponse({ ok: true });
+    return;
   }
   if (typeof msg.type === 'string' && msg.type.startsWith('filter:')) {
     handleFilterMessage(msg, sendResponse); // 异步 sendResponse
@@ -814,6 +967,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   dropEntry(tabId, 'tab removed');
   chrome.storage.session.remove('mark:' + tabId).catch(() => {}); // tab 没了标记才清
   chrome.storage.session.remove('flowrec:' + tabId).catch(() => {}); // 录制会话随 tab 清
+  chrome.storage.session.remove('flowrun:' + tabId).catch(() => {}); // 未完成的 flow 运行随 tab 清
 });
 
 reloadFilterCfg().then(() => log(`whitelist loaded: ${filterCfg.enabled === false ? 'disabled' : 'enabled'}, domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));

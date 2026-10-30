@@ -24,7 +24,7 @@
         "http://127.0.0.1:8766/*",
         "http://localhost:8766/*"
       ],
-      "js": ["content.js"],
+      "js": ["vendor/js-yaml.min.js", "content.js", "flowrun.js"],
       "run_at": "document_idle",
       "all_frames": false
     },

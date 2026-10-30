@@ -10,6 +10,7 @@
   python cli_client.py run "任务描述" --match github.com   # LLM 自动操控（需环境变量）
   python cli_client.py flow <flow.yaml> [--page 标记]      # 跑 YAML 测试流（CI 入口）
        [--var k=v ...] [--from-step s03] [--keep-going]     # 详见 docs/spec-flow.md
+       # 本地读文件 → 经 broker 传给浏览器扩展执行；flow 库在扩展本地，无需落盘
        环境变量: OPENAI_API_KEY / OPENAI_BASE_URL(可选) / BRIDGE_MODEL(可选)
 """
 import argparse
@@ -157,6 +158,14 @@ def flow(path, page=None, vars_list=None, from_step=None, keep_going=False):
     except Exception as e:
         print(f"[flow] 执行失败：{e}（broker 在跑吗？）")
         return 2
+    # 202：broker 同步等待超时但执行仍在继续，转异步轮询
+    while report.get("status") == "running" and report.get("run_id"):
+        print(f"[flow] 执行中…… {report.get('done') or 0}/{report.get('steps_total') or '?'}")
+        try:
+            report = http("GET", f"/flows/status?run_id={report['run_id']}&wait_ms=30000", timeout=120)
+        except Exception as e:
+            print(f"[flow] 轮询失败：{e}")
+            return 2
     if report.get("error"):
         print(f"[flow] {report['error']}")
         return 2
@@ -166,15 +175,13 @@ def flow(path, page=None, vars_list=None, from_step=None, keep_going=False):
             line += f"  {s['params']}"
         if not s.get("ok"):
             line += f"\n     └─ {s.get('error')}"
-        if s.get("path"):
-            line += f"\n     └─ 截图: {s['path']}"
+        if s.get("dataUrl"):
+            line += f"\n     └─ 截图: dataUrl（{len(s['dataUrl'])} 字符，base64）"
         print(line)
     print(f"[flow] {report.get('flow')}: 通过 {report.get('passed')}/{report.get('total')}"
           + ("" if report.get("ok") else "（有失败）"))
     if report.get("data_rows"):
         print(f"[flow] 数据组：{report.get('passed_rows')}/{report.get('data_rows')} 组通过")
-    if report.get("report_path"):
-        print(f"[flow] 报告: {report['report_path']}")
     return 0 if report.get("ok") else 1
 
 

@@ -113,6 +113,98 @@ function stepsYaml(doc){
   });
   return L.join('\n') + '\n';
 }
+/* ---------- flow 库 / 运行（录制详情与「运行 flow」磁贴共用） ---------- */
+function runFlowReq(body, out){
+  out.innerHTML = '';
+  var prog = note(t('启动中 …', 'Starting …'));
+  out.appendChild(prog);
+  try{ out.scrollIntoView({ block:'nearest' }); }catch(e){}
+  function paintReport(rep){
+    out.innerHTML = '';
+    out.appendChild(el('div', 'd', '<b>' + (rep.ok ? 'OK' : 'FAIL') + '</b> ' + esc(rep.flow || '') +
+      ' · ' + (rep.passed || 0) + '/' + (rep.total || 0) + t(' 步通过', ' steps passed')));
+    if(rep.data_rows) out.appendChild(note(t('数据组 ' + rep.passed_rows + '/' + rep.data_rows + ' 通过',
+      rep.passed_rows + '/' + rep.data_rows + ' data rows passed')));
+    (rep.steps || []).forEach(function(s){
+      var r3 = el('div');
+      r3.style.cssText = 'font-size:11px;padding:2px 0;border-bottom:1px dashed rgba(127,127,127,.25)';
+      r3.innerHTML = '<b style="color:' + (s.ok ? '#0a7d4e' : '#dc2626') + '">' + (s.ok ? 'OK  ' : 'FAIL') + '</b> ' +
+        esc(s.id + ' ' + s.do) +
+        (s.params ? ' <span style="color:#64748b">' + esc(s.params) + '</span>' : '') +
+        ' <span style="color:#64748b">' + s.ms + 'ms</span>' +
+        (s.ok ? '' : '<div style="color:#dc2626">' + esc(s.error || '') + '</div>');
+      if(s.dataUrl) r3.innerHTML += '<div><img src="' + s.dataUrl + '" style="max-width:100%;border:1px solid rgba(127,127,127,.3);border-radius:4px;margin-top:4px"></div>';
+      out.appendChild(r3);
+    });
+    if(rep.error) out.appendChild(note(t('失败：', 'Failed: ') + rep.error));
+  }
+  // 异步执行：run 返回 run_id 后轮询 status（wait_ms 长轮询），进度实时刷新，长流不再受单次请求超时限制
+  flowBridge('pinfo', {}, 8000).then(function(pi){
+    if(!pi || !pi.mark) throw new Error(t('本页没有页桥标记（页面未接入白名单？）', 'No page-bridge mark on this page (not allowlisted?)'));
+    prog.textContent = t('启动中（页桥 ' + pi.mark + '）…', 'Starting (mark ' + pi.mark + ') …');
+    function poll(rid){
+      flowBridge('flow', { op:'status', run_id:rid, wait_ms:20000 }, 45000).then(function(st){
+        if(st && st.error) throw new Error(st.error);
+        if(!st || st.status !== 'done'){
+          prog.textContent = t('运行中：', 'Running: ') +
+            ((st && st.done) || 0) + '/' + ((st && st.steps_total) || '?') + t(' 步', ' steps');
+          poll(rid);
+          return;
+        }
+        paintReport(st.report || { ok:false, total:0, passed:0, error:'no report' });
+      }).catch(function(e3){
+        out.innerHTML = '';
+        out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+      });
+    }
+    var req = { op:'run', mark:pi.mark, stop_on_fail: body.stop_on_fail !== false };
+    if(body.name) req.name = body.name;
+    if(body.yaml) req.yaml = body.yaml;
+    flowBridge('flow', req, 60000).then(function(r){
+      if(!r || !r.run_id) throw new Error(t('broker 未返回 run_id（版本过旧？请重启 broker）', 'No run_id from broker (old version? restart the broker)'));
+      poll(r.run_id);
+    }).catch(function(e3){
+      out.innerHTML = '';
+      out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+    });
+  }).catch(function(e3){
+    out.innerHTML = '';
+    out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+  });
+}
+function runFlow(name, out){ runFlowReq({ name:name }, out); }
+function paintFlowLib(lib, out, refresh){
+  lib.innerHTML = '';
+  lib.appendChild(note(t('读取中…', 'Loading…')));
+  flowBridge('flow', { op:'list' }, 15000).then(function(items){
+    lib.innerHTML = '';
+    if(!items || !items.length){ lib.appendChild(note(t('库为空。先在「操作录制 → flow」里保存入库、导入，或直接粘贴运行。', 'Library is empty. Save a recording, import YAML, or paste-and-run in "Record → Flow".'))); return; }
+    items.forEach(function(f){
+      var row = el('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
+      row.innerHTML = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(f.name) +
+        ' <span style="color:#64748b">' + (f.steps == null ? '?' : f.steps) + t(' 步', ' steps') +
+        (f.broken ? ' · ' + t('解析失败', 'broken') : '') + '</span></span>';
+      row.appendChild(btn(t('运行', 'Run'), function(){ runFlow(f.name, out); }));
+      row.appendChild(btn('YAML', function(){
+        flowBridge('flow', { op:'get', name:f.name }, 15000).then(function(r){
+          out.innerHTML = '';
+          out.appendChild(codeBox(r.yaml, 220));
+          try{ out.scrollIntoView({ block:'nearest' }); }catch(e){}
+        }).catch(function(e3){ toast(String(e3.message || e3)); });
+      }));
+      row.appendChild(btn('×', function(){
+        flowBridge('flow', { op:'delete', name:f.name }, 15000).then(function(){
+          toast(t('已删除 ', 'Deleted ') + f.name); refresh();
+        }).catch(function(e3){ toast(String(e3.message || e3)); });
+      }));
+      lib.appendChild(row);
+    });
+  }).catch(function(e3){
+    lib.innerHTML = '';
+    lib.appendChild(note(t('库读取失败（扩展更新后需刷新页面）：', 'Library read failed (refresh the page after an extension update): ') + String(e3.message || e3)));
+  });
+}
 function recPaint(){
   if(recStatusEl && recStatusEl.isConnected){
     recStatusEl.innerHTML = REC.on
@@ -333,7 +425,7 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
         if(hasExt) acts.appendChild(btn(t('保存入库', 'Save to library'), function(){
           var doc = recDoc();
           flowBridge('flow', { op:'save', name:doc.flow, yaml:stepsYaml(doc) }, 30000).then(function(r){
-            toast(t('已保存：', 'Saved: ') + ((r && r.path) || ''));
+            toast(t('已保存：', 'Saved: ') + ((r && r.name) || ''));
             render();
           }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
         }));
@@ -358,109 +450,57 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
       /* ---- 导入 ---- */
       b.appendChild(el('div', 'grp-h', t('导入', 'Import')));
       var ta = el('textarea');
-      ta.placeholder = t('粘贴 flow YAML（导出的或手写的）后点「导入保存」；保存前服务端会做 schema 校验。', 'Paste flow YAML (exported or hand-written) then "Import & save"; the server validates the schema before saving.');
+      ta.placeholder = t('粘贴 flow YAML（导出的或手写的）后点「导入保存」；保存前扩展会做 schema 校验。', 'Paste flow YAML (exported or hand-written) then "Import & save"; the extension validates the schema before saving.');
       ta.style.cssText = 'width:100%;min-height:64px;padding:5px;font-size:11px;font-family:monospace;margin-bottom:6px';
       b.appendChild(ta);
+      var runOut = el('div');
       if(hasExt) b.appendChild(btn(t('导入保存', 'Import & save'), function(){
         var y3 = ta.value.trim();
         if(!y3){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
         flowBridge('flow', { op:'save', yaml:y3 }, 30000).then(function(r){
-          toast(t('已保存：', 'Saved: ') + ((r && r.path) || ''));
+          toast(t('已保存：', 'Saved: ') + ((r && r.name) || ''));
           render();
         }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
       }));
+      if(hasExt) b.appendChild(btn(t('直接运行（不保存）', 'Run without saving'), function(){
+        var y4 = ta.value.trim();
+        if(!y4){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
+        runFlowReq({ yaml:y4 }, runOut);
+      }));
       else b.appendChild(note(t('导入需要扩展版。', 'Import needs the extension build.')));
+      if(hasExt) b.appendChild(runOut);
 
       /* ---- flow 库 ---- */
       if(hasExt){
-        b.appendChild(el('div', 'grp-h', t('flow 库（flows/*.yaml）', 'Flow library (flows/*.yaml)')));
+        b.appendChild(el('div', 'grp-h', t('flow 库（浏览器本地）', 'Flow library (browser-local)')));
         var lib = el('div');
-        lib.appendChild(note(t('读取中…', 'Loading…')));
         b.appendChild(lib);
         var out = el('div');
         b.appendChild(out);
-        function paintReport(rep){
-          out.innerHTML = '';
-          out.appendChild(el('div', 'd', '<b>' + (rep.ok ? 'OK' : 'FAIL') + '</b> ' + esc(rep.flow) +
-            ' · ' + rep.passed + '/' + rep.total + t(' 步通过', ' steps passed')));
-          if(rep.data_rows) out.appendChild(note(t('数据组 ' + rep.passed_rows + '/' + rep.data_rows + ' 通过',
-            rep.passed_rows + '/' + rep.data_rows + ' data rows passed')));
-          (rep.steps || []).forEach(function(s){
-            var r3 = el('div');
-            r3.style.cssText = 'font-size:11px;padding:2px 0;border-bottom:1px dashed rgba(127,127,127,.25)';
-            r3.innerHTML = '<b style="color:' + (s.ok ? '#0a7d4e' : '#dc2626') + '">' + (s.ok ? 'OK  ' : 'FAIL') + '</b> ' +
-              esc(s.id + ' ' + s.do) +
-              (s.params ? ' <span style="color:#64748b">' + esc(s.params) + '</span>' : '') +
-              ' <span style="color:#64748b">' + s.ms + 'ms</span>' +
-              (s.ok ? '' : '<div style="color:#dc2626">' + esc(s.error || '') + '</div>') +
-              (s.path ? '<div style="color:#64748b">🖼 ' + esc(s.path) + '</div>' : '');
-            out.appendChild(r3);
-          });
-          if(rep.report_path) out.appendChild(note(t('报告：', 'Report: ') + rep.report_path));
-        }
-        function runFlow(name){
-          // 异步执行：run 返回 run_id 后轮询 status（wait_ms 长轮询），进度实时刷新，长流不再受单次请求超时限制
-          flowBridge('pinfo', {}, 8000).then(function(pi){
-            if(!pi || !pi.mark) throw new Error(t('本页没有页桥标记（页面未接入白名单？）', 'No page-bridge mark on this page (not allowlisted?)'));
-            out.innerHTML = '';
-            var prog = note(t('启动中：' + name + '（页桥 ' + pi.mark + '）…', 'Starting: ' + name + ' (mark ' + pi.mark + ') …'));
-            out.appendChild(prog);
-            function poll(rid){
-              flowBridge('flow', { op:'status', run_id:rid, wait_ms:20000 }, 45000).then(function(st){
-                if(!st || st.status !== 'done'){
-                  prog.textContent = t('运行中：' + name + ' · ', 'Running: ' + name + ' · ') +
-                    ((st && st.done) || 0) + '/' + ((st && st.steps_total) || '?') + t(' 步', ' steps');
-                  poll(rid);
-                  return;
-                }
-                paintReport(st.report || { ok:false, flow:name, total:0, passed:0, error:'no report' });
-              }).catch(function(e3){
-                out.innerHTML = '';
-                out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
-              });
-            }
-            flowBridge('flow', { op:'run', name:name, mark:pi.mark }, 60000).then(function(r){
-              if(!r || !r.run_id) throw new Error(t('broker 未返回 run_id（版本过旧？请重启 broker）', 'No run_id from broker (old version? restart the broker)'));
-              poll(r.run_id);
-            }).catch(function(e3){
-              out.innerHTML = '';
-              out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
-            });
-          }).catch(function(e3){
-            out.innerHTML = '';
-            out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
-          });
-        }
-        flowBridge('flow', { op:'list' }, 15000).then(function(items){
-          lib.innerHTML = '';
-          if(!items || !items.length){ lib.appendChild(note(t('库为空。录制后「保存入库」或用「导入」。', 'Library is empty. Save a recording or use "Import".'))); return; }
-          items.forEach(function(f){
-            var row = el('div');
-            row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
-            row.innerHTML = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(f.name) +
-              ' <span style="color:#64748b">' + (f.steps == null ? '?' : f.steps) + t(' 步', ' steps') +
-              (f.broken ? ' · ' + t('解析失败', 'broken') : '') + '</span></span>';
-            row.appendChild(btn(t('运行', 'Run'), function(){ runFlow(f.name); }));
-            row.appendChild(btn('YAML', function(){
-              flowBridge('flow', { op:'get', name:f.name }, 15000).then(function(r){
-                out.innerHTML = '';
-                out.appendChild(codeBox(r.yaml, 220));
-              }).catch(function(e3){ toast(String(e3.message || e3)); });
-            }));
-            row.appendChild(btn('×', function(){
-              flowBridge('flow', { op:'delete', name:f.name }, 15000).then(function(){
-                toast(t('已删除 ', 'Deleted ') + f.name); render();
-              }).catch(function(e3){ toast(String(e3.message || e3)); });
-            }));
-            lib.appendChild(row);
-          });
-        }).catch(function(e3){
-          lib.innerHTML = '';
-          lib.appendChild(note(t('库读取失败（broker 在跑吗？扩展更新后需刷新页面）：', 'Library read failed (is broker running? refresh the page after extension updates): ') + String(e3.message || e3)));
-        });
+        paintFlowLib(lib, out, render);
       }
     }
     recRender = render;
+    render();
+  }},
+{ id:'runflow', cat:'build', name:'运行 flow', icon:'play', star:2, desc:'在当前离线页面执行 flow，实时进度与逐步报告',
+  en:{ name:'Run Flow', desc:'Run a flow on the current page with live progress and per-step reports' },
+  run:function(b){
+    function render(){
+      b.innerHTML = '';
+      if(!hasExt){
+        b.appendChild(note(t('原型环境（无扩展桥）：请用 CLI 执行 —— python cli_client.py flow <本地.yaml> --page <标记>；扩展版可直接在此运行。',
+          'Prototype environment (no extension bridge): run via CLI — python cli_client.py flow <local.yaml> --page <mark>; the extension build can run here directly.')));
+        return;
+      }
+      b.appendChild(note(t('使用当前页的页桥标记执行；页面需已接入白名单。', 'Runs with the current page mark; the page must be allowlisted.')));
+      var out = el('div');
+      b.appendChild(out);
+      b.appendChild(el('div', 'grp-h', t('flow 库（浏览器本地）', 'Flow library (browser-local)')));
+      var lib = el('div');
+      b.appendChild(lib);
+      paintFlowLib(lib, out, render);
+    }
     render();
   }},
 { id:'formkit', cat:'build', name:'表单保存与填充', icon:'save', star:3, desc:'按站点保存/回填表单值；随机假数据一键填充',

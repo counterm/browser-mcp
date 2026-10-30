@@ -1,6 +1,7 @@
 # 示例 flow：冒烟测试（schema 见 docs/spec-flow.md）
 # 运行：python cli_client.py flow flows/demo-smoke.yaml
-#   或 MCP：flow {op:"save", yaml:...} 后 flow {op:"run", name:"demo-smoke"}
+#   或粘贴到工具箱「操作录制 → flow → 直接运行（不保存）」
+#   或 MCP：flow {op:"save", yaml:...}（存进扩展本地库）后 flow {op:"run", name:"demo-smoke"}
 # 注意：s04 为故意失败的演示步（selector 不存在），展示失败自动截图与报告形态，删掉即可。
 flow: demo-smoke
 desc: 打开 example.com 断言正文并截图

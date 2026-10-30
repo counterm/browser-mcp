@@ -13,9 +13,10 @@
   GET  /pages                    发现页面 -> [{id, url, title, viewport, mode, ago}]
   GET  /events        (SSE)      订阅广播: page_up / page_update / page_down / page_event
   POST /call/{page_id}           下发一条命令并等结果, body=命令JSON, ?timeout=30
-  GET  /flows                    flow 库列表（YAML 测试流，见 docs/spec-flow.md）
+  GET  /flows                    flow 库列表（库在浏览器扩展本地，broker 转发）
   POST /flows/run                执行 flow: {name|yaml, page?, vars?, from_step?, stop_on_fail?}
   GET|PUT|DELETE /flow/{name}    读取 / 保存 / 删除 flow（PUT body {"yaml": "..."}）
+                                 flow 由页面内的扩展脚本解析执行；broker 只做传输与进度汇总
   WS   /client                   长连接: 收广播 + attach 页面 + 双向命令流
   POST /mcp                       MCP 服务器（Streamable HTTP）
   GET  /sse + POST /messages      MCP 服务器（旧版 HTTP+SSE 传输）
@@ -31,7 +32,6 @@
 """
 import asyncio
 import base64
-import csv
 import io
 import json
 import os
@@ -41,11 +41,6 @@ import time
 import uuid
 
 from aiohttp import web, WSMsgType
-
-try:
-    import yaml  # flow 功能需要（pip install pyyaml）；缺失时其余功能不受影响
-except ImportError:
-    yaml = None
 
 TOKEN = os.environ.get("BRIDGE_TOKEN", "")
 PORT = int(os.environ.get("BRIDGE_PORT", "8766"))
@@ -87,7 +82,7 @@ HELP = """Page Bridge Broker
   GET  /marks                页桥标记列表（mark -> pid/url 映射）
   GET  /mark/{mark}           按标记查页面（在线状态 + pid + url/title）
   POST /mark/{mark}           按标记下发命令（等价 /call/{pid}）
-  GET  /flows                 flow 库列表（YAML 测试流）
+  GET  /flows                 flow 库列表（库在浏览器扩展本地，broker 转发）
   POST /flows/run             执行 flow（body {name|yaml, page?, vars?, ...}）
   GET|PUT|DELETE /flow/{name} 读取 / 保存 / 删除 flow
   POST /mcp                   MCP 服务器（Streamable HTTP，无状态）
@@ -206,6 +201,8 @@ def handle_page_msg(pid: str, msg: dict):
         entry = WAITERS.get(msg.get("id"))
         if entry and not entry[0].done():
             entry[0].set_result(msg)
+    elif t in ("flow_progress", "flow_report"):
+        flow_track(msg)
     elif t == "event":
         broadcast({"type": "page_event", "page_id": pid, "event": msg})
 
@@ -385,73 +382,59 @@ async def h_mark_call(request):
     return await forward(request, page)
 
 
-# ---------------- Flow：HTTP 端点（CLI / 扩展桥 / 外部接入共用） ----------------
+# ---------------- Flow：HTTP 端点（库与执行都在扩展侧，broker 只转发） ----------------
 
-def _need_yaml():
-    return None if yaml else web.json_response(
-        {"error": "缺少依赖：pip install pyyaml（flow 功能需要）"}, status=500)
+FLOW_NO_PAGE = ("flow 库与执行都在浏览器扩展里：需要至少一个在线页面"
+                "（确认 broker 在跑、扩展已装、当前站点在白名单）")
+
+
+def any_page():
+    """库操作用任意一个在线页面即可（库是扩展本地存储，与页面无关）。"""
+    if not PAGES:
+        return None, FLOW_NO_PAGE
+    return next(iter(PAGES.values())), ""
+
+
+async def flow_lib_req(page, op, timeout=20, **kw):
+    """把一条 flow_lib 命令转发给页面扩展，返回 (data, 错误)。"""
+    try:
+        res = await call_page(page, {"action": "flow_lib", "op": op, **kw}, timeout)
+    except asyncio.TimeoutError:
+        return None, "扩展未在 20s 内响应（页面刷新过？）"
+    except RuntimeError as e:
+        return None, f"页面通道不可用：{e}"
+    if not res.get("ok"):
+        return None, res.get("error") or "扩展返回失败"
+    return res.get("data"), ""
 
 
 async def h_flows(request):
     if not authorized(request):
         return deny()
-    if (err := _need_yaml()):
-        return err
-    return web.json_response(flow_list())
-
-
-async def h_flow_run(request):
-    """POST /flows/run  body {name|yaml, page?, vars?, from_step?, stop_on_fail?, mode?}"""
-    if not authorized(request):
-        return deny()
-    if (err := _need_yaml()):
-        return err
-    try:
-        body = await request.json()
-    except ValueError:
-        return web.json_response({"error": "bad json"}, status=400)
-    doc, err = flow_doc_from(body if isinstance(body, dict) else {})
-    if err:
-        return web.json_response({"error": err}, status=400)
-    page, err = resolve_page(body.get("page"))
+    page, err = any_page()
     if err:
         return web.json_response({"error": err}, status=409)
-    if body.get("mode") == "async":
-        return web.json_response(flow_start_async(page, doc, body.get("vars"),
-                                                  body.get("from_step"),
-                                                  bool(body.get("stop_on_fail", True))))
-    report = await flow_run(page, doc, body.get("vars"), body.get("from_step"),
-                            bool(body.get("stop_on_fail", True)))
-    return web.json_response(report)
-
-
-async def h_flow_status(request):
-    """GET /flows/status?run_id=xxx&wait_ms=0  异步运行进度轮询；done 时带完整报告。"""
-    if not authorized(request):
-        return deny()
-    rid = request.query.get("run_id") or ""
-    out, ok = await flow_status(rid, request.query.get("wait_ms", 0))
-    if not ok:
-        return web.json_response({"error": f"run_id 不存在：{rid}（done 超 1h 清理）"}, status=404)
-    return web.json_response(out)
+    data, err = await flow_lib_req(page, "list")
+    if err:
+        return web.json_response({"error": err}, status=500)
+    return web.json_response(data or [])
 
 
 async def h_flow_get(request):
     if not authorized(request):
         return deny()
-    if (err := _need_yaml()):
-        return err
-    text, err = flow_read(request.match_info["name"])
+    page, err = any_page()
+    if err:
+        return web.json_response({"error": err}, status=409)
+    data, err = await flow_lib_req(page, "get", name=request.match_info["name"])
     if err:
         return web.json_response({"error": err}, status=404)
-    return web.json_response({"name": request.match_info["name"], "yaml": text})
+    return web.json_response(data)
 
 
 async def h_flow_save(request):
     if not authorized(request):
         return deny()
-    if (err := _need_yaml()):
-        return err
     try:
         body = await request.json()
     except ValueError:
@@ -459,27 +442,88 @@ async def h_flow_save(request):
     text = body.get("yaml") if isinstance(body, dict) else None
     if not isinstance(text, str) or not text.strip():
         return web.json_response({"error": "需要 {\"yaml\": \"...\"}"}, status=400)
-    try:
-        doc = yaml.safe_load(text)
-    except Exception as e:
-        return web.json_response({"error": f"YAML 解析失败：{e}"}, status=400)
-    doc, err = flow_validate(doc)
+    page, err = any_page()
     if err:
-        return web.json_response({"error": f"校验失败：{err}"}, status=400)
-    p, err = flow_write(doc, text)
+        return web.json_response({"error": err}, status=409)
+    data, err = await flow_lib_req(page, "save", name=request.match_info["name"], yaml=text)
     if err:
-        return web.json_response({"error": err}, status=500)
-    return web.json_response({"ok": True, "path": p, "steps": len(doc["steps"])})
+        return web.json_response({"error": err}, status=400)
+    return web.json_response(data)
 
 
 async def h_flow_delete(request):
     if not authorized(request):
         return deny()
-    p = flow_path(request.match_info["name"])
-    if not p or not os.path.isfile(p):
-        return web.json_response({"error": f"flow 不存在：{request.match_info['name']}"}, status=404)
-    os.remove(p)
-    return web.json_response({"ok": True})
+    page, err = any_page()
+    if err:
+        return web.json_response({"error": err}, status=409)
+    data, err = await flow_lib_req(page, "delete", name=request.match_info["name"])
+    if err:
+        return web.json_response({"error": err}, status=404)
+    return web.json_response(data)
+
+
+async def h_flow_run(request):
+    """POST /flows/run  body {name|yaml, page?, vars?, from_step?, stop_on_fail?, mode?}
+
+    broker 只把请求转发给目标页面的扩展执行器（flowrun.js），并按 WS 回报维护内存进度。
+    """
+    if not authorized(request):
+        return deny()
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "bad json"}, status=400)
+    if not isinstance(body, dict) or not (body.get("name") or body.get("yaml")):
+        return web.json_response({"error": "需要 name 或 yaml 之一"}, status=400)
+    page, err = resolve_page(body.get("page"))
+    if err:
+        return web.json_response({"error": err}, status=409)
+    cmd = {"action": "flow_run"}
+    for k in ("name", "yaml", "vars", "from_step", "stop_on_fail"):
+        if body.get(k) is not None:
+            cmd[k] = body[k]
+    try:
+        res = await call_page(page, cmd, 20)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "扩展未在 20s 内受理（页面已刷新过？）"}, status=504)
+    except RuntimeError as e:
+        return web.json_response({"error": f"页面通道不可用：{e}"}, status=409)
+    if not res.get("ok"):
+        return web.json_response({"error": res.get("error") or "启动失败"}, status=400)
+    acc = res.get("data") or {}
+    rid = acc.get("run_id")
+    if not rid:
+        return web.json_response({"error": "扩展未返回 run_id"}, status=500)
+    ent = FLOW_RUNS.get(rid)
+    if ent is None:
+        ent = FLOW_RUNS[rid] = {"flow": acc.get("flow"), "status": "running",
+                                "started": time.time(), "finished": None,
+                                "steps_total": acc.get("steps_total"), "done": 0,
+                                "passed": 0, "failed": 0, "report": None}
+    if body.get("mode") == "async":
+        return web.json_response({"run_id": rid, "status": "running",
+                                  "steps_total": ent.get("steps_total"),
+                                  "poll": f'flow {{"op":"status", "run_id":"{rid}"}}'})
+    wait_ms = min(max(float(request.query.get("timeout", 600)), 1), 900) * 1000
+    out = await flow_wait(rid, wait_ms)
+    if out.get("status") != "done":
+        return web.json_response({**out, "run_id": rid,
+                                  "error": "等待超时：执行仍在继续，请改用 mode=async + /flows/status 轮询"},
+                                 status=202)
+    return web.json_response(out.get("report") or out)
+
+
+async def h_flow_status(request):
+    """GET /flows/status?run_id=xxx&wait_ms=0  异步运行进度轮询；done 时带完整报告。"""
+    if not authorized(request):
+        return deny()
+    rid = request.query.get("run_id") or ""
+    if rid not in FLOW_RUNS:
+        return web.json_response({"error": f"run_id 不存在：{rid}（只保留最近完成 1 小时内的记录）"},
+                                 status=404)
+    out = await flow_wait(rid, min(max(float(request.query.get("wait_ms", 0)), 0), 60000))
+    return web.json_response(out)
 
 
 async def h_client_ws(request):
@@ -569,10 +613,10 @@ MCP_TOOLS = [
          "clear": {"type": "boolean", "description": "先清空页面日志缓冲区"},
          "redact": {"type": "boolean", "description": "脱敏手机号 / 邮箱 / token 等（默认 true）"}})},
     {"name": "flow",
-     "description": "YAML 测试流（schema 见 docs/spec-flow.md）：把页面操作序列编排成 YAML（每步唯一 id），逐步执行并汇总报告（每步 id/操作/值/OK/FAIL/耗时/URL），失败步自动附截图；步骤级 retry/retry_wait_ms 可重试。执行时页面 console 打 [flow:名] 前缀轨迹，可用 page_logs 的 q=\"[flow:\" 拉取。op=list 列出 flows/ 库；op=get {name} 取 YAML 文本；op=save {yaml} 校验并保存为 flows/<flow名>.yaml；op=delete {name}；op=run {name 或 yaml, page?, vars?, from_step?, stop_on_fail?, mode?}：mode=async 立即返回 run_id（长流推荐），默认同步等完（MCP 上限 115s）；op=status {run_id, wait_ms?} 轮询异步运行进度，done 时带完整报告。",
+     "description": "YAML 测试流（schema 见 docs/spec-flow.md）：把页面操作序列编排成 YAML（每步唯一 id），由浏览器扩展逐页执行并汇总报告（每步 id/操作/值/OK/FAIL/耗时/URL），失败步自动附截图；步骤级 retry/retry_wait_ms 可重试，跨页跳转后自动续跑。执行时页面 console 打 [flow:名] 前缀轨迹，可用 page_logs 的 q=\"[flow:\" 拉取。flow 库存在浏览器扩展本地（chrome.storage），broker 只转发：op=list 列出库；op=get {name} 取 YAML 文本；op=save {yaml} 校验并保存（库内按 flow 名索引）；op=delete {name}；op=run {name 或 yaml, page?, vars?, from_step?, stop_on_fail?, mode?}：mode=async 立即返回 run_id（长流推荐），默认同步等完（MCP 上限 115s）；op=status {run_id, wait_ms?} 轮询异步运行进度，done 时带完整报告。库操作需要一个在线页面作为执行端。",
      "inputSchema": mcp_schema({
          "op": {"type": "string", "description": "list / get / save / delete / run / status"},
-         "name": {"type": "string", "description": "flow 名（= 文件名，不含 .yaml）"},
+         "name": {"type": "string", "description": "flow 名（库内索引，小写字母/数字/-/_，≤64 字符）"},
          "yaml": {"type": "string", "description": "YAML 文本；save 保存用，run 也可直接传 yaml 免入库"},
          "page": {"type": "string", "description": "页面标记 id 或 pid；只有一个在线页面时可省略"},
          "vars": {"type": "object", "description": "覆盖/补充 ${vars.x} 变量"},
@@ -616,519 +660,113 @@ def marks_list():
     return sorted(out, key=lambda x: x["mark"])
 
 
-# ---------------- Flow：YAML 测试流（编排/执行/报告，见 docs/spec-flow.md） ----------------
+# ---------------- Flow：内存运行状态（执行在扩展侧，broker 只转发与汇总） ----------------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FLOWS_DIR = os.path.join(BASE_DIR, "flows")     # flow 库（真相源，Git 友好）
-REPORTS_DIR = os.path.join(BASE_DIR, ".flows")  # 运行报告与失败截图存档
-
-# do 白名单 = 页面端 ACTIONS 剔除 runner 内部用的 ping / snapshot / plog，
-# 另有编排动作 flow（子流程：运行库里的另一个 flow，可嵌套 ≤5 层、禁循环引用）
-FLOW_DO = {
-    "click", "type", "press", "select", "scroll", "hover",
-    "nav", "back", "reload", "eval", "cookies", "storage", "upload",
-    "wait", "highlight", "dom", "screenshot",
-    "tab_list", "tab_open", "tab_close", "tab_activate", "netlog",
-    "flow",
-}
-# 步骤控制键：不作为命令参数下发
-FLOW_CTRL = {"id", "do", "desc", "expect", "max_wait_ms", "on_fail", "secret",
-             "retry", "retry_wait_ms"}
-# 断言键；断言值支持 ${vars.x} / ${env.NAME}
-FLOW_EXP_KEYS = {"url_contains", "url_is", "text", "selector"}
-FLOW_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-FLOW_VAR_RE = re.compile(r"\$\{(vars|env)\.([A-Za-z0-9_.-]+)\}")
+FLOW_RUNS = {}  # run_id -> {flow,status,started,finished,steps_total,done,passed,failed,report}
 
 
-def flow_validate(doc):
-    """校验并规整 flow 文档，返回 (doc, 错误信息)；错误时 doc 为 None。"""
-    if yaml is None:
-        return None, "缺少依赖：pip install pyyaml"
-    if not isinstance(doc, dict):
-        return None, "flow 文档必须是映射"
-    name = doc.get("flow")
-    if not isinstance(name, str) or not FLOW_NAME_RE.match(name):
-        return None, f"flow 名非法（小写字母/数字/-/_，≤64 字符）：{name!r}"
-    steps = doc.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return None, "steps 必须是非空列表"
-    seen = set()
-    for i, s in enumerate(steps):
-        where = f"steps[{i}]"
-        if not isinstance(s, dict):
-            return None, f"{where} 必须是映射"
-        sid, do = s.get("id"), s.get("do")
-        if not isinstance(sid, str) or not sid:
-            return None, f"{where} 缺 id（字符串）"
-        where = f"步骤 {sid}"
-        if sid in seen:
-            return None, f"步骤 id 重复：{sid}"
-        seen.add(sid)
-        if do not in FLOW_DO:
-            return None, f"{where}: do「{do}」不在支持列表：{sorted(FLOW_DO)}"
-        if do == "flow":
-            sub_name = s.get("name")
-            if not isinstance(sub_name, str) or not FLOW_NAME_RE.match(sub_name):
-                return None, f"{where}: do=flow 需要合法的 name（子流程名，小写字母/数字/-/_）"
-            if s.get("vars") is not None and not isinstance(s.get("vars"), dict):
-                return None, f"{where}: vars 必须是映射"
-        exp = s.get("expect")
-        if exp is not None:
-            for e in (exp if isinstance(exp, list) else [exp]):
-                if not isinstance(e, dict) or not e or not set(e) <= FLOW_EXP_KEYS:
-                    return None, f"{where}: expect 只支持 {sorted(FLOW_EXP_KEYS)}（单键映射或其列表）"
-        if s.get("on_fail") not in (None, "continue", "abort"):
-            return None, f"{where}: on_fail 只支持 continue / abort"
-        for k2, hi in (("retry", 10), ("retry_wait_ms", 60000), ("max_wait_ms", 30000)):
-            v2 = s.get(k2)
-            if v2 is None:
-                continue
-            if not isinstance(v2, (int, float)) or isinstance(v2, bool) or v2 < 0 or v2 > hi:
-                return None, f"{where}: {k2} 必须是 0~{hi} 的数字"
-    if doc.get("vars") is not None and not isinstance(doc.get("vars"), dict):
-        return None, "vars 必须是映射"
-    # 数据驱动：data 内联列表 或 data_file（.json 数组 / .csv 首行表头），二选一；
-    # data_file 相对 flows/ 目录解析，校验时即归一化为 doc["data"]（原文本保存不受影响）
-    data, data_file = doc.get("data"), doc.get("data_file")
-    if data is not None and data_file is not None:
-        return None, "data 与 data_file 二选一"
-    if data_file is not None:
-        if not isinstance(data_file, str) or not data_file:
-            return None, "data_file 必须是文件路径字符串"
-        p = data_file if os.path.isabs(data_file) else os.path.join(FLOWS_DIR, data_file)
-        if not os.path.isfile(p):
-            return None, f"data_file 不存在：{p}（相对路径按 flows/ 目录解析）"
-        try:
-            if p.lower().endswith(".csv"):
-                with open(p, encoding="utf-8-sig", newline="") as f:
-                    rows = [{k: v for k, v in r.items() if k is not None} for r in csv.DictReader(f)]
-            else:
-                with open(p, encoding="utf-8") as f:
-                    rows = json.load(f)
-        except Exception as e:
-            return None, f"data_file 解析失败：{e}"
-        data = rows
-    if data is not None:
-        if not isinstance(data, list) or not data:
-            return None, "data 必须是非空列表（每项一组变量映射）"
-        if len(data) > 200:
-            return None, "data 最多 200 组"
-        for i, row in enumerate(data):
-            if not isinstance(row, dict):
-                return None, f"data[{i}] 必须是映射"
-            for k, v in row.items():
-                if not isinstance(v, (str, int, float, bool)):
-                    return None, f"data[{i}].{k} 必须是标量（字符串/数字/布尔）"
-        doc["data"] = data
-    return doc, ""
-
-
-def flow_sub(v, variables, where):
-    """递归展开 ${vars.x} / ${env.NAME}；未定义的变量直接报错（fail fast）。"""
-    if isinstance(v, str):
-        def rep(m):
-            src, key = m.group(1), m.group(2)
-            if src == "env":
-                val = os.environ.get(key)
-                if val is None:
-                    raise ValueError(f"{where}: 环境变量 {key} 未设置")
-                return val
-            if key not in variables:
-                raise ValueError(f"{where}: 未定义变量 vars.{key}（写在 flow 的 vars 里或运行参数传入）")
-            return str(variables[key])
-        return FLOW_VAR_RE.sub(rep, v)
-    if isinstance(v, dict):
-        return {k: flow_sub(x, variables, where) for k, x in v.items()}
-    if isinstance(v, list):
-        return [flow_sub(x, variables, where) for x in v]
-    return v
-
-
-def flow_brief(step, secret):
-    """步骤参数摘要（console 轨迹与报告用；secret 时 text/value/code 打码）。"""
-    parts = []
-    for k in ("bid", "selector", "text", "url", "value", "key", "dy", "ms",
-              "code", "op", "area", "name", "tag", "active"):
-        v = step.get(k)
-        if v in (None, ""):
-            continue
-        v = str(v)
-        if secret and k in ("text", "value", "code"):
-            v = "***"
-        elif len(v) > 80:
-            v = v[:80] + "…"
-        parts.append(f"{k}={v}")
-    return " ".join(parts)
-
-
-def flow_path(name):
-    if not isinstance(name, str) or not FLOW_NAME_RE.match(name):
-        return None
-    return os.path.join(FLOWS_DIR, name + ".yaml")
-
-
-def flow_list():
-    if not os.path.isdir(FLOWS_DIR):
-        return []
-    out = []
-    for fn in sorted(os.listdir(FLOWS_DIR)):
-        if not fn.endswith(".yaml"):
-            continue
-        p = os.path.join(FLOWS_DIR, fn)
-        meta = {"name": fn[:-5], "mtime": int(os.path.getmtime(p))}
-        try:
-            with open(p, encoding="utf-8") as f:
-                doc = yaml.safe_load(f)
-            meta["desc"] = doc.get("desc")
-            meta["steps"] = len(doc.get("steps") or [])
-        except Exception:
-            meta["broken"] = True
-        out.append(meta)
-    return out
-
-
-def flow_read(name):
-    p = flow_path(name)
-    if not p or not os.path.isfile(p):
-        return None, f"flow 不存在：{name}（用 op=list 查看）"
-    with open(p, encoding="utf-8") as f:
-        return f.read(), ""
-
-
-def flow_write(doc, text):
-    os.makedirs(FLOWS_DIR, exist_ok=True)
-    p = flow_path(doc["flow"])
-    with open(p, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text if text.endswith("\n") else text + "\n")
-    return p, ""
-
-
-def flow_doc_from(body):
-    """从 {name|yaml} 取 flow 文档并校验，返回 (doc, 错误)。"""
-    text = body.get("yaml")
-    if text:
-        try:
-            doc = yaml.safe_load(text)
-        except Exception as e:
-            return None, f"YAML 解析失败：{e}"
-    elif body.get("name"):
-        text, err = flow_read(body["name"])
-        if err:
-            return None, err
-        try:
-            doc = yaml.safe_load(text)
-        except Exception as e:
-            return None, f"flow 库文件解析失败（{body['name']}）：{e}"
-    else:
-        return None, "需要 name 或 yaml 之一"
-    return flow_validate(doc)
-
-
-async def flow_ping(page):
-    try:
-        res = await call_page(page, {"action": "ping"}, 10)
-        return res.get("data") or {}
-    except (asyncio.TimeoutError, RuntimeError):
-        return {}
-
-
-async def flow_echo(page, prefix, text, level="log"):
-    """每步轨迹：broker 控制台 + 页面 console（MAIN world 代打，plog 可查）。"""
-    print(text)
-    try:
-        await call_page(page, {"action": "log", "prefix": prefix, "text": text, "level": level}, 5)
-    except Exception:
-        pass  # 回显失败不影响执行
-
-
-async def flow_expect(page, exps, max_wait_ms):
-    """断言轮询：全部条件同时满足才过；超时返回 (False, 原因)。"""
-    deadline = time.monotonic() + min(max(float(max_wait_ms), 0), 30000) / 1000.0
-    while True:
-        ok_all, last_err, url = True, "", None
-        for e in exps:
-            key, want = next(iter(e.items()))
-            want = str(want)
-            if key in ("url_contains", "url_is"):
-                if url is None:
-                    url = (await flow_ping(page)).get("url") or ""
-                if (url == want) if key == "url_is" else (want not in url):
-                    ok_all, last_err = False, f"{key}: 期望「{want}」实际「{url}」"
-            elif key == "text":
-                res = await call_page(page, {"action": "snapshot", "max": 1, "text_max": 20000}, 15)
-                got = (res.get("data") or {}).get("text") or ""
-                if want not in got:
-                    ok_all, last_err = False, f"text: 页面正文未包含「{want}」"
-            else:  # selector
-                res = await call_page(page, {"action": "dom", "selector": want,
-                                             "maxNodes": 1, "maxChars": 1000}, 15)
-                if not res.get("ok"):
-                    ok_all, last_err = False, f"selector: {res.get('error') or ('不存在 ' + want)}"
-        if ok_all:
-            return True, ""
-        if time.monotonic() >= deadline:
-            return False, last_err + f"（等待 {max_wait_ms}ms 超时）"
-        await asyncio.sleep(0.3)
-
-
-FLOW_RUNS = {}  # run_id -> {flow,status,started,finished,steps_total,done,passed,failed,report,task}
-
-
-async def flow_run(page, doc, variables=None, from_step=None, stop_on_fail=True, run_id=None, _chain=()):
-    """执行一个 flow，返回报告 dict（同时落盘 .flows/）。
-
-    run_id 给定时（异步模式）把实时进度写进 FLOW_RUNS[run_id]，供 op=status 轮询。
-    _chain 为子流程调用链（祖先 flow 名元组），用于禁循环引用与限深。
-    """
-    name = doc["flow"]
-    prefix = f"[flow:{name}]"
-    run_id = run_id or (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4])
-    vars_all = {**(doc.get("vars") or {}), **(variables or {})}
-    steps = doc["steps"]
-    if from_step:
-        idx = next((i for i, s in enumerate(steps) if s.get("id") == from_step), None)
-        if idx is None:
-            return {"ok": False, "error": f"from_step 不存在：{from_step}"}
-        steps = steps[idx:]
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    rows = doc.get("data")
-    n_rows = len(rows) if rows else 1
-    results, row_summaries = [], None
-    ok_all = True
-    await flow_echo(page, prefix,
-                    f"{prefix} ▶ {name} 开始执行（{len(steps)} 步" +
-                    (f" × {n_rows} 组数据）" if rows else "）"))
-
-    async def run_once(row_vars, row_no):
-        """跑一遍全部步骤；results 为跨数据组共享的扁平列表（每组条目带 row 标记）。"""
-        ok2 = True
-        if row_no is not None:
-            await flow_echo(page, prefix, f"{prefix} ▶ 数据组 {row_no}/{n_rows}")
-        for s in steps:
-            sid, do, secret = s.get("id"), s.get("do"), bool(s.get("secret"))
-            where = f"步骤 {sid}" + (f"（数据组 {row_no}）" if row_no else "")
-            t0 = time.monotonic()
-            entry = {"id": sid, "do": do, "params": flow_brief(s, secret), "ok": False}
-            if row_no is not None:
-                entry["row"] = row_no
-            try:  # 变量展开错误不重试，直接失败
-                cmd = {"action": do, **flow_sub({k: v for k, v in s.items() if k not in FLOW_CTRL},
-                                                row_vars, where)}
-                exps = None
-                if s.get("expect") is not None:
-                    exps = flow_sub(s["expect"], row_vars, where)
-                    exps = exps if isinstance(exps, list) else [exps]
-            except (ValueError, TypeError) as e:
-                cmd = exps = None
-                entry["error"] = str(e)
-            if cmd is not None:
-                attempts = 1 + min(max(int(s.get("retry") or 0), 0), 10)
-                rwait = max(int(s.get("retry_wait_ms") or 1000), 0) / 1000.0
-                for att in range(attempts):
-                    try:
-                        if do == "flow":  # 子流程：从库加载 → 校验 → 递归执行（同一目标页）
-                            sub_name = cmd.get("name")
-                            chain = _chain + (name,)
-                            if sub_name in chain:
-                                raise ValueError(f"flow 循环引用：{' → '.join(chain + (sub_name,))}")
-                            if len(chain) > 5:
-                                raise ValueError(f"flow 嵌套超过 5 层：{' → '.join(chain)}")
-                            sub_text, sub_err = flow_read(sub_name)
-                            if sub_err:
-                                raise ValueError(f"子流程加载失败：{sub_err}")
-                            try:
-                                sub_doc = yaml.safe_load(sub_text)
-                            except Exception as e:
-                                raise ValueError(f"子流程 YAML 解析失败（{sub_name}）：{e}")
-                            sub_doc, sub_err = flow_validate(sub_doc)
-                            if sub_err:
-                                raise ValueError(f"子流程无效（{sub_name}）：{sub_err}")
-                            child_vars = {**(sub_doc.get("vars") or {}), **(cmd.get("vars") or {})}
-                            sub_rep = await flow_run(page, sub_doc, variables=child_vars,
-                                                     stop_on_fail=True, _chain=chain)
-                            entry["passed"] = sub_rep["passed"]
-                            entry["failed"] = sub_rep["failed"]
-                            entry["total"] = sub_rep["total"]
-                            entry["steps"] = sub_rep["steps"]
-                            if not sub_rep["ok"]:
-                                raise ValueError(f"子流程 {sub_name} 有 {sub_rep['failed']} 步失败")
-                        else:
-                            res = await call_page(page, cmd, 30)
-                            if not res.get("ok"):
-                                raise ValueError(res.get("error") or "命令失败")
-                            data = res.get("data")
-                            # 截图步：base64 落盘换路径（同 page_call 的处理）
-                            if isinstance(data, dict) and isinstance(data.get("dataUrl"), str):
-                                p = save_dataurl(data["dataUrl"], tag=name)
-                                data = {k: v for k, v in data.items() if k != "dataUrl"}
-                                if p:
-                                    entry["path"] = p
-                            if do in ("nav", "back", "reload"):
-                                await asyncio.sleep(0.5)  # 导航类动作后固定缓冲；真正等待就绪用 expect
-                        if exps:
-                            exp_ok, exp_err = await flow_expect(page, exps, s.get("max_wait_ms", 5000))
-                            entry["expect"] = {"ok": exp_ok, "error": exp_err or None}
-                            if not exp_ok:
-                                raise ValueError(exp_err)
-                        entry["url"] = ((await flow_ping(page)).get("url") or "")[:300]
-                        entry["ok"] = True
-                        entry.pop("error", None)  # 前几次尝试失败、本次成功时清掉残留错误
-                        break
-                    except (ValueError, asyncio.TimeoutError, RuntimeError) as e:
-                        entry["error"] = str(e) or type(e).__name__
-                        if att < attempts - 1:
-                            await flow_echo(page, prefix,
-                                            f"{prefix} {sid} {do} 第 {att + 1}/{attempts} 次尝试失败：{entry['error']}"
-                                            f"（{int(rwait * 1000)}ms 后重试）", level="warn")
-                            await asyncio.sleep(rwait)
-            if not entry["ok"]:
-                try:  # 最终失败自动截图（尽力而为）
-                    res = await call_page(page, {"action": "screenshot"}, 20)
-                    p = save_dataurl((res.get("data") or {}).get("dataUrl"),
-                                     tag=f"{name}-{sid}-fail") if res.get("ok") else None
-                    if p:
-                        entry["path"] = p
-                except Exception:
-                    pass
-            entry["ms"] = round((time.monotonic() - t0) * 1000)
-            status = "OK" if entry["ok"] else f"FAIL: {entry.get('error', '')}"
-            if do == "flow":
-                status += f"（{entry.get('passed', 0)}/{entry.get('total', 0)}）"
-            await flow_echo(page, prefix,
-                            f"{prefix} {sid} {do} {entry['params'] or '-'} → {status} {entry['ms']}ms",
-                            level="log" if entry["ok"] else "error")
-            results.append(entry)
-            if run_id in FLOW_RUNS:  # 异步模式：实时进度
-                ent = FLOW_RUNS[run_id]
-                ent["done"] = len(results)
-                ent["passed"] = sum(1 for r in results if r["ok"])
-                ent["failed"] = sum(1 for r in results if not r["ok"])
-            if not entry["ok"]:
-                ok2 = False
-                if stop_on_fail and s.get("on_fail") != "continue":
-                    break
-        return ok2
-
-    if rows:
-        row_summaries = []
-        for i, row in enumerate(rows, 1):
-            mark = len(results)
-            ok_i = await run_once({**vars_all, **row}, i)
-            seg = results[mark:]
-            row_summaries.append({"row": i, "ok": ok_i,
-                                  "passed": sum(1 for r in seg if r["ok"]),
-                                  "failed": sum(1 for r in seg if not r["ok"])})
-            ok_all = ok_all and ok_i
-    else:
-        ok_all = await run_once(vars_all, None)
-
-    report = {"flow": name, "run": run_id, "ok": ok_all,
-              "total": len(results), "passed": sum(1 for r in results if r["ok"]),
-              "failed": sum(1 for r in results if not r["ok"]), "steps": results}
-    if rows:
-        report["data_rows"] = len(rows)
-        report["passed_rows"] = sum(1 for r in row_summaries if r["ok"])
-        report["failed_rows"] = len(rows) - report["passed_rows"]
-        report["rows"] = row_summaries
-    try:
-        report["report_path"] = os.path.join(REPORTS_DIR, f"{name}-{run_id}.json")
-        with open(report["report_path"], "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
-    except OSError:
-        report.pop("report_path", None)
-    tail = f"{prefix} ■ 执行结束：通过 {report['passed']}/{report['total']}"
-    if rows:
-        tail += f"，数据组 {report['passed_rows']}/{report['data_rows']}"
-    await flow_echo(page, prefix, tail, level="log" if ok_all else "error")
-    return report
-
-
-def flow_start_async(page, doc, variables=None, from_step=None, stop_on_fail=True):
-    """异步启动一次 flow 执行（asyncio 后台任务），立即返回 run_id；op=status / GET /flows/status 轮询。"""
-    rid = "r" + uuid.uuid4().hex[:10]
-    n_steps = len(doc["steps"]) * max(len(doc.get("data") or [1]), 1)  # 数据驱动时进度按 步×组 计
-    FLOW_RUNS[rid] = {"flow": doc["flow"], "status": "running", "started": time.time(),
-                      "finished": None, "steps_total": n_steps, "done": 0,
-                      "passed": 0, "failed": 0, "report": None, "task": None}
-
-    async def _bg():
-        try:
-            rep = await flow_run(page, doc, variables, from_step, stop_on_fail, run_id=rid)
-        except Exception as e:  # 防御：runner 本身不应抛，兜底不挂死轮询方
-            rep = {"ok": False, "error": str(e) or type(e).__name__}
+def flow_track(msg):
+    """处理页面扩展上报的 flow_progress / flow_report，维护内存状态。"""
+    rid = msg.get("run_id")
+    if not rid:
+        return
+    if msg.get("type") == "flow_progress":
         ent = FLOW_RUNS.get(rid)
-        if ent is not None:
-            ent["status"], ent["finished"], ent["report"] = "done", time.time(), rep
-            ent["task"] = None
-    FLOW_RUNS[rid]["task"] = asyncio.create_task(_bg())
-    return {"run_id": rid, "status": "running", "steps_total": n_steps,
-            "poll": f'flow {{"op":"status", "run_id":"{rid}"}}'}
-
-
-async def flow_status(rid, wait_ms=0):
-    """查询异步运行状态；wait_ms>0 时长轮询直到 done 或超时。返回 (out, 存在)。"""
+        if ent is None:
+            return
+        for k in ("done", "passed", "failed", "steps_total"):
+            if msg.get(k) is not None:
+                ent[k] = msg[k]
+        return
+    rep = msg.get("report") or {}
     ent = FLOW_RUNS.get(rid)
-    if not ent:
-        return None, False
-    deadline = time.monotonic() + min(max(float(wait_ms), 0), 60000) / 1000.0
-    while ent.get("status") != "done" and time.monotonic() < deadline:
-        await asyncio.sleep(0.3)
-        ent = FLOW_RUNS.get(rid) or {}
+    if ent is None:
+        ent = FLOW_RUNS[rid] = {"flow": rep.get("flow"), "started": time.time()}
+    ent.update({"status": "done", "finished": time.time(), "report": rep,
+                "steps_total": rep.get("total", ent.get("steps_total")),
+                "done": rep.get("total"), "passed": rep.get("passed"),
+                "failed": rep.get("failed")})
+    print(f"[flow] {rep.get('flow') or rid} 结束：通过 {rep.get('passed')}/{rep.get('total')}")
+
+
+def flow_pub(ent):
     out = {k: ent.get(k) for k in ("flow", "status", "steps_total", "done", "passed", "failed")}
     if ent.get("status") == "done":
         out["report"] = ent.get("report")
-    return out, True
+    return out
+
+
+async def flow_wait(rid, wait_ms=0):
+    """长轮询内存里的运行状态，直到 done 或超时。"""
+    ent = FLOW_RUNS.get(rid)
+    if ent is None:
+        return {"error": f"run_id 不存在：{rid}"}
+    deadline = time.monotonic() + min(max(float(wait_ms), 0), 900000) / 1000.0
+    while ent.get("status") != "done" and time.monotonic() < deadline:
+        await asyncio.sleep(0.3)
+        ent = FLOW_RUNS.get(rid) or ent
+    return flow_pub(ent)
 
 
 async def flow_mcp(args):
-    """MCP 工具 flow 的执行体，返回 (文本, 是否错误)。"""
-    if yaml is None:
-        return "缺少依赖：pip install pyyaml（flow 功能需要）", True
+    """MCP 工具 flow 的执行体，返回 (文本, 是否错误)。库与执行都在扩展侧。"""
     op = args.get("op")
-    if op == "list":
-        return mcp_text(flow_list()), False
-    if op == "get":
-        text, err = flow_read(args.get("name"))
-        return (text, False) if not err else (err, True)
-    if op == "save":
-        text = args.get("yaml") or ""
-        try:
-            doc = yaml.safe_load(text)
-        except Exception as e:
-            return f"YAML 解析失败：{e}", True
-        doc, err = flow_validate(doc)
-        if err:
-            return f"校验失败：{err}", True
-        p, err = flow_write(doc, text)
-        if err:
-            return err, True
-        return f"已保存 {p}（{len(doc['steps'])} 步）", False
-    if op == "delete":
-        p = flow_path(args.get("name"))
-        if not p or not os.path.isfile(p):
-            return f"flow 不存在：{args.get('name')}", True
-        os.remove(p)
-        return f"已删除 {p}", False
-    if op == "run":
-        doc, err = flow_doc_from(args)
-        if err:
-            return err, True
-        page, err = resolve_page(args.get("page"))
-        if err:
-            return err, True
-        if args.get("mode") == "async":
-            # 异步：后台任务执行，立即返回 run_id；op=status 轮询进度与报告
-            return mcp_text(flow_start_async(page, doc, args.get("vars"), args.get("from_step"),
-                                             bool(args.get("stop_on_fail", True)))), False
-        report = await flow_run(page, doc, args.get("vars"), args.get("from_step"),
-                                bool(args.get("stop_on_fail", True)))
-        return mcp_text(report), not report.get("ok")
     if op == "status":
         rid = args.get("run_id") or ""
-        out, ok = await flow_status(rid, args.get("wait_ms"))
-        if not ok:
+        if rid not in FLOW_RUNS:
             return f"run_id 不存在：{rid}（异步运行记录只在 broker 内存里，done 超 1h 清理）", True
-        return mcp_text(out), False
+        return mcp_text(await flow_wait(rid, args.get("wait_ms"))), False
+    if op in ("list", "get", "save", "delete"):
+        page, err = any_page()
+    else:
+        page, err = resolve_page(args.get("page"))
+    if err:
+        return "flow 库与执行都在浏览器扩展里：" + err, True
+    if op == "list":
+        data, err = await flow_lib_req(page, "list")
+        return (mcp_text(data or []), False) if not err else (err, True)
+    if op == "get":
+        data, err = await flow_lib_req(page, "get", name=args.get("name"))
+        return (data.get("yaml"), False) if not err else (err, True)
+    if op == "save":
+        data, err = await flow_lib_req(page, "save", name=args.get("name"), yaml=args.get("yaml") or "")
+        return (mcp_text(data), False) if not err else (err, True)
+    if op == "delete":
+        data, err = await flow_lib_req(page, "delete", name=args.get("name"))
+        return (mcp_text(data), False) if not err else (err, True)
+    if op == "run":
+        cmd = {"action": "flow_run"}
+        for k in ("name", "yaml", "vars", "from_step", "stop_on_fail"):
+            if args.get(k) is not None:
+                cmd[k] = args[k]
+        try:
+            res = await call_page(page, cmd, 20)
+        except asyncio.TimeoutError:
+            return "扩展未在 20s 内受理（页面已刷新过？）", True
+        except RuntimeError as e:
+            return f"页面通道不可用：{e}", True
+        if not res.get("ok"):
+            return f"启动失败：{res.get('error') or ''}", True
+        acc = res.get("data") or {}
+        rid = acc.get("run_id")
+        if not rid:
+            return "扩展未返回 run_id", True
+        ent = FLOW_RUNS.get(rid)
+        if ent is None:
+            ent = FLOW_RUNS[rid] = {"flow": acc.get("flow"), "status": "running",
+                                    "started": time.time(), "finished": None,
+                                    "steps_total": acc.get("steps_total"), "done": 0,
+                                    "passed": 0, "failed": 0, "report": None}
+        if args.get("mode") == "async":
+            return mcp_text({"run_id": rid, "status": "running",
+                             "steps_total": ent.get("steps_total"),
+                             "poll": f'flow {{"op":"status", "run_id":"{rid}"}}'}), False
+        out = await flow_wait(rid, 115000)  # MCP 等待上限 115s
+        if out.get("status") != "done":
+            return mcp_text({**out, "run_id": rid,
+                             "hint": "仍在执行：用 op=status 轮询，或改 mode=async"}), False
+        rep = out.get("report") or {}
+        return mcp_text(rep), not rep.get("ok")
     return f"未知 op：{op}（list / get / save / delete / run / status）", True
 
 

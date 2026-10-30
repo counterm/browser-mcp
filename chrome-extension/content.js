@@ -484,6 +484,9 @@
     } catch { return String(v); }
   }
 
+  // flowrun.js（独立内容脚本）复用同一套动作实现；同一隔离世界共享 globalThis
+  globalThis.__batbExec = { ACTIONS, pageInfo, sleep, W, locate, serialize };
+
   /* ============ 3. 命令入口（来自 background） ============ */
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
