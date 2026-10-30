@@ -142,7 +142,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `pwcode` | 生成 Playwright 代码 | ★★★ |
 | `userscript` | 生成油猴脚本骨架 | ★★★ |
 | `crawler` | 爬虫代码生成（Python） | ★★ |
-| `record` | 操作录制 → 步骤（演示数据） | ★★ |
+| `record` | 操作录制 → flow（实装：录制页面操作生成 YAML 测试流，复制 / 下载 / 保存入库；扩展版另有导入、flow 库管理与一键运行，跨页由 background 续存自动补 nav，见 `docs/spec-flow.md`） | ★★★ 高级 |
 | `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过；「复制」导出 JSON、「粘贴」按导出内容填充） | ★★★ |
 
 **feats/capture.js（采集，4 项）**〔仅扩展版，原型未含〕

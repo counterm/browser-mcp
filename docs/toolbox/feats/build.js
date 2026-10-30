@@ -5,6 +5,179 @@ var note = B.w.note, codeBox = B.w.codeBox, scoreBadge = B.w.scoreBadge, btn = B
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
 var ensurePicked = B.ensurePicked, t = B.t;
 
+/* ---------- flow 录制引擎（模块级：面板关开不影响录制；扩展版跨页由 background 续存，见 docs/spec-flow.md） ---------- */
+var REC = { on:false, name:'', desc:'', vars:{}, steps:[], url:location.href };
+var recBound = false, recListEl = null, recStatusEl = null, recPrevEl = null;
+var hasExt = false;
+try { hasExt = !!(window.chrome && chrome.runtime && chrome.runtime.id); } catch(e){}
+
+function flowBridge(action, params, timeoutMs){
+  return new Promise(function(resolve, reject){
+    var id = Math.random().toString(36).slice(2);
+    var timer = setTimeout(function(){
+      cleanup();
+      reject(new Error(t('扩展桥无响应（扩展未就绪或刚更新过，请刷新页面后重试）', 'Extension bridge not responding (extension not ready or just updated — refresh the page and retry)')));
+    }, timeoutMs || 15000);
+    function onRes(ev){
+      var d = ev.detail;
+      if(!d || d.id !== id) return;
+      cleanup();
+      if(d.ok) resolve(d.data);
+      else reject(new Error(d.error || t('扩展桥调用失败', 'Extension bridge call failed')));
+    }
+    function cleanup(){ clearTimeout(timer); window.removeEventListener('batb:bridge:res', onRes); }
+    window.addEventListener('batb:bridge:res', onRes);
+    window.dispatchEvent(new CustomEvent('batb:bridge', { detail:{ id:id, action:action, params:params || {} } }));
+  });
+}
+function recTarget(e){
+  var path = e.composedPath ? e.composedPath() : null, i;
+  if(path) for(i = 0; i < path.length; i++) if(path[i] === B.host) return null; // 工具箱自身 DOM 不录
+  var x = e.target;
+  if(!x || x.nodeType !== 1 || !x.closest || x.closest('#ba-toolbox-host')) return null;
+  return x;
+}
+function recNextId(){
+  var mx = 0;
+  REC.steps.forEach(function(s){ var m = /^s(\d+)$/.exec(s.id || ''); if(m) mx = Math.max(mx, +m[1]); });
+  var n = mx + 1;
+  return 's' + (n < 10 ? '0' + n : n);
+}
+function recAdd(st){
+  if(!REC.on) return;
+  var full = { id: recNextId() };
+  for(var k in st) full[k] = st[k];
+  REC.steps.push(full);
+  recSync();
+  recPaint();
+}
+function recOnClick(e){
+  var x = recTarget(e); if(!x) return;
+  var tgt = x.closest('a,button,summary,[onclick],[role="button"],[role="tab"],[role="menuitem"]');
+  if(!tgt || /^label$|^option$|^input$|^textarea$|^select$/i.test(tgt.tagName)) return;
+  // input/textarea/select 的点击是聚焦噪音，由 change 统一记录；label/option 由其目标元素记录
+  recAdd({ do:'click', selector:B.sel.bestSelector(tgt), text:(tgt.innerText || '').trim().slice(0, 40) });
+}
+function recOnChange(e){
+  var x = recTarget(e); if(!x) return;
+  var tgt = x.closest('input,textarea,select'); if(!tgt) return;
+  var ty = (tgt.type || '').toLowerCase();
+  if(ty === 'checkbox'){ recAdd({ do:'click', selector:B.sel.bestSelector(tgt) }); return; }
+  if(ty === 'radio' || ty === 'file' || ty === 'hidden') return;
+  if(tgt.tagName === 'SELECT'){ recAdd({ do:'select', selector:B.sel.bestSelector(tgt), value:tgt.value }); return; }
+  var st = { do:'type', selector:B.sel.bestSelector(tgt), text:tgt.value };
+  if(ty === 'password'){ st.text = '${env.PWD}'; st.secret = true; } // 密码不落明文，运行时从环境变量取
+  recAdd(st);
+}
+function recOnKey(e){
+  if(e.key !== 'Enter') return;
+  var x = recTarget(e); if(!x) return;
+  var tgt = x.closest('input,textarea'); if(!tgt || tgt.tagName === 'TEXTAREA') return;
+  recAdd({ do:'press', key:'Enter' });
+}
+function recBind(on){
+  if(on === recBound) return;
+  var fn = on ? 'addEventListener' : 'removeEventListener';
+  document[fn]('click', recOnClick, true);
+  document[fn]('change', recOnChange, true);
+  document[fn]('keydown', recOnKey, true);
+  recBound = on;
+}
+function recSync(){
+  if(hasExt) flowBridge('flowrec', { op:'set', state:REC }, 8000).catch(function(){});
+}
+function recDefaultName(){
+  return 'flow-' + String(location.hostname || 'page').replace(/[^a-zA-Z0-9-]/g, '').toLowerCase().slice(0, 24) +
+    '-' + new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+}
+function recDoc(){
+  return { flow:(REC.name || recDefaultName()).toLowerCase(), desc:REC.desc, vars:REC.vars, steps:REC.steps };
+}
+function stepsYaml(doc){
+  var L = ['# ' + t('由工具箱操作录制生成 · schema 见 docs/spec-flow.md', 'Recorded by the toolbox · schema: docs/spec-flow.md')];
+  L.push('flow: ' + doc.flow);
+  if(doc.desc) L.push('desc: ' + JSON.stringify(doc.desc));
+  var vk = Object.keys(doc.vars || {});
+  if(vk.length){
+    L.push('vars:');
+    vk.forEach(function(k){ L.push('  ' + k + ': ' + JSON.stringify(String(doc.vars[k]))); });
+  }
+  L.push('steps:');
+  doc.steps.forEach(function(s){
+    L.push('  - id: ' + s.id);
+    Object.keys(s).forEach(function(k){
+      if(k === 'id') return;
+      var v = s[k];
+      if(v === undefined || v === null || v === '') return;
+      L.push('    ' + k + ': ' + ((v === true || v === false) ? v : JSON.stringify(String(v))));
+    });
+  });
+  return L.join('\n') + '\n';
+}
+function recPaint(){
+  if(recStatusEl && recStatusEl.isConnected){
+    recStatusEl.innerHTML = REC.on
+      ? '<span style="color:#dc2626">●</span> ' + t('录制中 · ', 'Recording · ') + REC.steps.length + t(' 步（跨页面自动续录）', ' steps (auto-resumes across pages)')
+      : t('未在录制', 'Not recording') + (REC.steps.length ? ' · ' + REC.steps.length + t(' 步待导出', ' steps pending export') : '');
+  }
+  if(recListEl && recListEl.isConnected){
+    recListEl.innerHTML = '';
+    if(!REC.steps.length){
+      recListEl.appendChild(note(t('还没有步骤。点「开始录制」后正常操作页面即可。', 'No steps yet. Click "Start recording" and just use the page normally.')));
+    } else {
+      REC.steps.forEach(function(s){
+        var val = s.text !== undefined ? s.text : (s.value !== undefined ? s.value : '');
+        var disp = s.do + '  ' + (s.selector || s.url || s.key || '') +
+          (val !== '' && val != null ? '  = ' + String(val).slice(0, 24) : '') + (s.secret ? '  (*** )' : '');
+        var row = el('div', null, '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          esc(s.id + '  ' + disp) + '</span>');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
+        var isVar = !s.secret && /^\$\{/.test(String(s.text !== undefined ? s.text : (s.value !== undefined ? s.value : '')));
+        if(!s.secret && !isVar && (s.text !== undefined || s.value !== undefined)){
+          row.appendChild(btn(t('⇄变量', '⇄Var'), function(){
+            var k2 = s.text !== undefined ? 'text' : 'value';
+            var vn = 'v' + (Object.keys(REC.vars).length + 1);
+            REC.vars[vn] = s[k2];
+            s[k2] = '${vars.' + vn + '}';
+            recSync(); recPaint();
+          }));
+        }
+        row.appendChild(btn('×', function(){
+          var i2 = REC.steps.indexOf(s);
+          if(i2 > -1) REC.steps.splice(i2, 1);
+          recSync(); recPaint();
+        }));
+        recListEl.appendChild(row);
+      });
+    }
+  }
+  if(recPrevEl && recPrevEl.isConnected){
+    var pre = recPrevEl.querySelector('pre');
+    if(pre) pre.textContent = stepsYaml(recDoc());
+  }
+}
+function recStart(){
+  REC.on = true; REC.url = location.href;
+  if(!REC.steps.length) REC.steps.push({ id: recNextId(), do:'nav', url:location.href }); // 起始页固定为第一步
+  recBind(true); recSync(); recPaint();
+}
+function recStop(){ REC.on = false; recBind(false); recSync(); recPaint(); }
+function recReset(){
+  REC.on = false; recBind(false);
+  REC.name = ''; REC.desc = ''; REC.vars = {}; REC.steps = []; REC.url = location.href;
+  if(hasExt) flowBridge('flowrec', { op:'clear' }, 8000).catch(function(){});
+  recPaint();
+}
+/* 跨页续录：工具箱每次注入问一次 background；URL 变了由 background 自动补一条 nav 步骤 */
+if(hasExt) flowBridge('flowrec', { op:'get', url:location.href }, 8000).then(function(st){
+  if(st && st.on){
+    REC.on = true; REC.name = st.name || ''; REC.desc = st.desc || '';
+    REC.vars = st.vars || {}; REC.steps = st.steps || []; REC.url = st.url || location.href;
+    recBind(true);
+    setTimeout(function(){ B.w.toast(t('流程录制已恢复（' + REC.steps.length + ' 步）', 'Flow recording resumed (' + REC.steps.length + ' steps)')); }, 600);
+  }
+}).catch(function(){});
+
 B.register([
 { id:'pwcode', cat:'build', name:'生成 Playwright 代码', icon:'filecode', star:3, desc:'直接产出可运行定位 / 操作片段',
   en:{ name:'Playwright Code Generator', desc:'Instantly produce runnable locator / action snippets' },
@@ -87,21 +260,180 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
         'The selector is derived automatically from the page table; on a real site, replace it with the Element Picker result.')));
     }
   }},
-{ id:'record', cat:'build', name:'操作录制 → 步骤', icon:'clock', star:2, desc:'记录点击序列，导出可重放步骤', mock:true,
-  en:{ name:'Record Actions → Steps', desc:'Record click sequences and export replayable steps' },
+{ id:'record', cat:'build', name:'操作录制 → flow', icon:'clock', star:3, desc:'录制页面操作生成 YAML 测试流；导入 / 库管理 / 一键运行', adv:true,
+  en:{ name:'Record → Flow', desc:'Record page actions into YAML test flows; import / library / one-click run' },
   run:function(b){
-    b.appendChild(el('div', 'd', t('录制 3 步后的导出效果：', 'Export preview after recording 3 steps:')));
-    b.appendChild(codeBox(t(
-'第一步：点击「导出订单」按钮（[data-reactroot] .hero .btn.pri）\n' +
-'第二步：在「客户姓名」输入框填写「张伟」\n' +
-'第三步：点击「打开弹窗」按钮，等待弹窗出现\n\n' +
-'// 可导出为 cli_client.py 的重放脚本',
-'Step 1: click the "Export Orders" button ([data-reactroot] .hero .btn.pri)\n' +
-'Step 2: enter "Zhang Wei" in the "Customer Name" input\n' +
-'Step 3: click the "Open Dialog" button and wait for the dialog to appear\n\n' +
-'// Exportable as a replay script for cli_client.py')));
-    b.appendChild(note(t('录制依赖 content script 事件钩子，原型中以演示数据展示交互形态。',
-      'Recording relies on content-script event hooks; the prototype uses demo data to show the interaction.')));
+    function render(){
+      b.innerHTML = '';
+      if(!hasExt) b.appendChild(note(t('当前为原型环境（无扩展桥）：录制与复制 / 下载可用；保存入库、库管理与运行需扩展版。', 'Prototype environment (no extension bridge): recording and copy/download work; library save / management / run need the extension build.')));
+
+      /* ---- 录制控制 ---- */
+      var ctl = el('div');
+      ctl.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px';
+      var nameIn = el('input');
+      nameIn.value = REC.name; nameIn.placeholder = t('flow 名（留空自动生成）', 'flow name (auto if empty)');
+      nameIn.style.cssText = 'flex:1 1 130px;min-width:120px;padding:3px 6px;font-size:11px';
+      nameIn.onchange = function(){ REC.name = nameIn.value.trim(); recSync(); recPaint(); };
+      var descIn = el('input');
+      descIn.value = REC.desc; descIn.placeholder = t('描述（可选）', 'description (optional)');
+      descIn.style.cssText = 'flex:1 1 130px;min-width:120px;padding:3px 6px;font-size:11px';
+      descIn.onchange = function(){ REC.desc = descIn.value.trim(); recSync(); recPaint(); };
+      ctl.appendChild(nameIn); ctl.appendChild(descIn);
+      b.appendChild(ctl);
+
+      var status = el('div', 'd');
+      recStatusEl = status; recPaint();
+      b.appendChild(status);
+
+      var acts = el('div');
+      acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px';
+      acts.appendChild(btn(REC.on ? t('停止录制', 'Stop recording') : t('开始录制', 'Start recording'), function(){
+        if(REC.on) recStop(); else recStart();
+        render();
+      }));
+      if(REC.steps.length){
+        acts.appendChild(btn(t('复制 YAML', 'Copy YAML'), function(){
+          copyText(stepsYaml(recDoc())).then(function(){ toast(t('已复制到剪贴板', 'Copied to clipboard')); });
+        }));
+        acts.appendChild(btn(t('下载 .yaml', 'Download .yaml'), function(){
+          var doc = recDoc();
+          var blob = new Blob([stepsYaml(doc)], { type:'text/yaml' });
+          var u = URL.createObjectURL(blob);
+          var a2 = document.createElement('a');
+          a2.href = u; a2.download = doc.flow + '.yaml'; a2.click();
+          setTimeout(function(){ URL.revokeObjectURL(u); }, 3000);
+        }));
+        if(hasExt) acts.appendChild(btn(t('保存入库', 'Save to library'), function(){
+          var doc = recDoc();
+          flowBridge('flow', { op:'save', name:doc.flow, yaml:stepsYaml(doc) }, 30000).then(function(r){
+            toast(t('已保存：', 'Saved: ') + ((r && r.path) || ''));
+            render();
+          }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
+        }));
+        acts.appendChild(btn(t('清空', 'Clear'), function(){ recReset(); render(); }));
+      }
+      b.appendChild(acts);
+
+      /* ---- 步骤列表 ---- */
+      b.appendChild(el('div', 'grp-h', t('步骤', 'Steps')));
+      var list = el('div');
+      recListEl = list; recPaint();
+      b.appendChild(list);
+      b.appendChild(note(t('输入在失焦(change)时记录；下拉记 value；勾选框记点击；密码记为 ${env.PWD}（运行时注入）；点击链接跳转后自动补 nav 步骤并续录；「⇄变量」把录制值转为运行时变量。', 'Inputs are captured on change (blur); selects record value; checkboxes as clicks; passwords become ${env.PWD} (injected at runtime); link navigation appends a nav step and resumes; "⇄Var" turns a recorded value into a runtime variable.')));
+
+      /* ---- YAML 预览 ---- */
+      if(REC.steps.length){
+        b.appendChild(el('div', 'grp-h', t('YAML 预览', 'YAML preview')));
+        recPrevEl = codeBox(stepsYaml(recDoc()), 170);
+        b.appendChild(recPrevEl);
+      }
+
+      /* ---- 导入 ---- */
+      b.appendChild(el('div', 'grp-h', t('导入', 'Import')));
+      var ta = el('textarea');
+      ta.placeholder = t('粘贴 flow YAML（导出的或手写的）后点「导入保存」；保存前服务端会做 schema 校验。', 'Paste flow YAML (exported or hand-written) then "Import & save"; the server validates the schema before saving.');
+      ta.style.cssText = 'width:100%;min-height:64px;padding:5px;font-size:11px;font-family:monospace;margin-bottom:6px';
+      b.appendChild(ta);
+      if(hasExt) b.appendChild(btn(t('导入保存', 'Import & save'), function(){
+        var y3 = ta.value.trim();
+        if(!y3){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
+        flowBridge('flow', { op:'save', yaml:y3 }, 30000).then(function(r){
+          toast(t('已保存：', 'Saved: ') + ((r && r.path) || ''));
+          render();
+        }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
+      }));
+      else b.appendChild(note(t('导入需要扩展版。', 'Import needs the extension build.')));
+
+      /* ---- flow 库 ---- */
+      if(hasExt){
+        b.appendChild(el('div', 'grp-h', t('flow 库（flows/*.yaml）', 'Flow library (flows/*.yaml)')));
+        var lib = el('div');
+        lib.appendChild(note(t('读取中…', 'Loading…')));
+        b.appendChild(lib);
+        var out = el('div');
+        b.appendChild(out);
+        function paintReport(rep){
+          out.innerHTML = '';
+          out.appendChild(el('div', 'd', '<b>' + (rep.ok ? 'OK' : 'FAIL') + '</b> ' + esc(rep.flow) +
+            ' · ' + rep.passed + '/' + rep.total + t(' 步通过', ' steps passed')));
+          if(rep.data_rows) out.appendChild(note(t('数据组 ' + rep.passed_rows + '/' + rep.data_rows + ' 通过',
+            rep.passed_rows + '/' + rep.data_rows + ' data rows passed')));
+          (rep.steps || []).forEach(function(s){
+            var r3 = el('div');
+            r3.style.cssText = 'font-size:11px;padding:2px 0;border-bottom:1px dashed rgba(127,127,127,.25)';
+            r3.innerHTML = '<b style="color:' + (s.ok ? '#0a7d4e' : '#dc2626') + '">' + (s.ok ? 'OK  ' : 'FAIL') + '</b> ' +
+              esc(s.id + ' ' + s.do) +
+              (s.params ? ' <span style="color:#64748b">' + esc(s.params) + '</span>' : '') +
+              ' <span style="color:#64748b">' + s.ms + 'ms</span>' +
+              (s.ok ? '' : '<div style="color:#dc2626">' + esc(s.error || '') + '</div>') +
+              (s.path ? '<div style="color:#64748b">🖼 ' + esc(s.path) + '</div>' : '');
+            out.appendChild(r3);
+          });
+          if(rep.report_path) out.appendChild(note(t('报告：', 'Report: ') + rep.report_path));
+        }
+        function runFlow(name){
+          // 异步执行：run 返回 run_id 后轮询 status（wait_ms 长轮询），进度实时刷新，长流不再受单次请求超时限制
+          flowBridge('pinfo', {}, 8000).then(function(pi){
+            if(!pi || !pi.mark) throw new Error(t('本页没有页桥标记（页面未接入白名单？）', 'No page-bridge mark on this page (not allowlisted?)'));
+            out.innerHTML = '';
+            var prog = note(t('启动中：' + name + '（页桥 ' + pi.mark + '）…', 'Starting: ' + name + ' (mark ' + pi.mark + ') …'));
+            out.appendChild(prog);
+            function poll(rid){
+              flowBridge('flow', { op:'status', run_id:rid, wait_ms:20000 }, 45000).then(function(st){
+                if(!st || st.status !== 'done'){
+                  prog.textContent = t('运行中：' + name + ' · ', 'Running: ' + name + ' · ') +
+                    ((st && st.done) || 0) + '/' + ((st && st.steps_total) || '?') + t(' 步', ' steps');
+                  poll(rid);
+                  return;
+                }
+                paintReport(st.report || { ok:false, flow:name, total:0, passed:0, error:'no report' });
+              }).catch(function(e3){
+                out.innerHTML = '';
+                out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+              });
+            }
+            flowBridge('flow', { op:'run', name:name, mark:pi.mark }, 60000).then(function(r){
+              if(!r || !r.run_id) throw new Error(t('broker 未返回 run_id（版本过旧？请重启 broker）', 'No run_id from broker (old version? restart the broker)'));
+              poll(r.run_id);
+            }).catch(function(e3){
+              out.innerHTML = '';
+              out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+            });
+          }).catch(function(e3){
+            out.innerHTML = '';
+            out.appendChild(note(t('运行失败：', 'Run failed: ') + String(e3.message || e3)));
+          });
+        }
+        flowBridge('flow', { op:'list' }, 15000).then(function(items){
+          lib.innerHTML = '';
+          if(!items || !items.length){ lib.appendChild(note(t('库为空。录制后「保存入库」或用「导入」。', 'Library is empty. Save a recording or use "Import".'))); return; }
+          items.forEach(function(f){
+            var row = el('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
+            row.innerHTML = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(f.name) +
+              ' <span style="color:#64748b">' + (f.steps == null ? '?' : f.steps) + t(' 步', ' steps') +
+              (f.broken ? ' · ' + t('解析失败', 'broken') : '') + '</span></span>';
+            row.appendChild(btn(t('运行', 'Run'), function(){ runFlow(f.name); }));
+            row.appendChild(btn('YAML', function(){
+              flowBridge('flow', { op:'get', name:f.name }, 15000).then(function(r){
+                out.innerHTML = '';
+                out.appendChild(codeBox(r.yaml, 220));
+              }).catch(function(e3){ toast(String(e3.message || e3)); });
+            }));
+            row.appendChild(btn('×', function(){
+              flowBridge('flow', { op:'delete', name:f.name }, 15000).then(function(){
+                toast(t('已删除 ', 'Deleted ') + f.name); render();
+              }).catch(function(e3){ toast(String(e3.message || e3)); });
+            }));
+            lib.appendChild(row);
+          });
+        }).catch(function(e3){
+          lib.innerHTML = '';
+          lib.appendChild(note(t('库读取失败（broker 在跑吗？扩展更新后需刷新页面）：', 'Library read failed (is broker running? refresh the page after extension updates): ') + String(e3.message || e3)));
+        });
+      }
+    }
+    render();
   }},
 { id:'formkit', cat:'build', name:'表单保存与填充', icon:'save', star:3, desc:'按站点保存/回填表单值；随机假数据一键填充',
   en:{ name:'Save & Fill Forms', desc:'Save / restore form values per site; one-click random mock data' },

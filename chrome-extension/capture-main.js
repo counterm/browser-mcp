@@ -290,6 +290,20 @@
     } catch(e){ respond({ ok: false, error: String((e && e.message) || e) }); }
   });
 
+  /* ---------- flow 执行轨迹回显（batb:flowlog，见 docs/spec-flow.md） ----------
+   * broker 的 flow runner 每执行一步发一条 log 命令到 content.js，经本监听在 MAIN world
+   * 代打 console：ISOLATED world 的 console 不经过上面的 hook（plog 抓不到），代打后
+   * DevTools 可见、plog 可用 q="[flow:" 过滤拉取整条执行轨迹。失败步骤以 error 级别输出。
+   */
+  window.addEventListener('batb:flowlog', function(ev){
+    try {
+      var d = ev.detail || {};
+      var text = capLog(d.text, 2000);
+      var fn = d.level === 'error' ? 'error' : d.level === 'warn' ? 'warn' : 'log';
+      console[fn]('%c' + String(d.prefix || '[flow]'), 'color:#0a7d4e;font-weight:bold', text);
+    } catch(e){}
+  });
+
   /* ---------- fetch hook ---------- */
   (function(){
     var of = window.fetch;

@@ -15,7 +15,7 @@ importScripts('filter.js'); // 站点过滤核心（与 popup/options 共用）
 
 const CONTENT_ACTIONS = [
   'ping', 'snapshot', 'dom', 'click', 'type', 'press', 'select', 'scroll', 'hover',
-  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog', 'plog',
+  'nav', 'back', 'reload', 'eval', 'cookies', 'storage', 'upload', 'wait', 'highlight', 'netlog', 'plog', 'log',
 ];
 const EXTRA_ACTIONS = ['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate'];
 const CAPS = [...CONTENT_ACTIONS, ...EXTRA_ACTIONS];
@@ -637,6 +637,74 @@ const BACKGROUND_ACTIONS = {
   },
 };
 
+/* ============ 工具箱桥：flow（YAML 测试流）库与录制续存（docs/spec-flow.md） ============ */
+
+const BROKER_HTTP = `http://${CFG.host}:${CFG.port}`;
+
+async function brokerFetch(method, path, body) {
+  let res;
+  try {
+    res = await fetch(BROKER_HTTP + path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(`broker 不可达（${BROKER_HTTP}）：确认 broker 已启动`);
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  return data;
+}
+
+async function handleFlowBridge(msg, sendResponse) {
+  try {
+    let data;
+    if (msg.op === 'list') data = await brokerFetch('GET', '/flows');
+    else if (msg.op === 'get') data = await brokerFetch('GET', `/flow/${encodeURIComponent(msg.name)}`);
+    else if (msg.op === 'save') data = await brokerFetch('PUT', `/flow/${encodeURIComponent(msg.name)}`, { yaml: msg.yaml });
+    else if (msg.op === 'delete') data = await brokerFetch('DELETE', `/flow/${encodeURIComponent(msg.name)}`);
+    else if (msg.op === 'run') data = await brokerFetch('POST', '/flows/run', { name: msg.name, page: msg.mark, stop_on_fail: msg.stop_on_fail !== false, mode: 'async' });
+    else if (msg.op === 'status') data = await brokerFetch('GET', `/flows/status?run_id=${encodeURIComponent(msg.run_id || '')}&wait_ms=${Math.min(Math.max(+msg.wait_ms || 0, 0), 30000)}`);
+    else throw new Error(`unknown op: ${msg.op}`);
+    sendResponse({ ok: true, data });
+  } catch (e) {
+    sendResponse({ ok: false, error: String((e && e.message) || e) });
+  }
+}
+
+/* 录制会话续存：chrome.storage.session 按 tab 存（跨导航存活，tab 关闭即清）。
+   get 时对比 URL：换页了自动补一条 nav 步骤，实现「点击链接跳转 → 新页面继续录」。 */
+async function handleFlowRec(msg, tabId, sendResponse) {
+  const key = 'flowrec:' + tabId;
+  try {
+    if (msg.op === 'get') {
+      const o = await chrome.storage.session.get(key);
+      const st = o[key] || null;
+      if (st && st.on) {
+        const url = msg.url || '';
+        if (url && st.url && st.url !== url) {
+          const n = st.steps.length + 1;
+          st.steps.push({ id: 's' + (n < 10 ? '0' + n : n), do: 'nav', url });
+        }
+        if (url) st.url = url;
+        await chrome.storage.session.set({ [key]: st });
+      }
+      sendResponse({ ok: true, data: st });
+    } else if (msg.op === 'set') {
+      await chrome.storage.session.set({ [key]: msg.state || null });
+      sendResponse({ ok: true, data: 'ok' });
+    } else if (msg.op === 'clear') {
+      await chrome.storage.session.remove(key);
+      sendResponse({ ok: true, data: 'ok' });
+    } else {
+      sendResponse({ ok: false, error: `unknown op: ${msg.op}` });
+    }
+  } catch (e) {
+    sendResponse({ ok: false, error: String((e && e.message) || e) });
+  }
+}
+
 /* ============ 内容脚本消息 & 标签页事件 ============ */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -675,6 +743,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         title: (ent && ent.title) || ''
       } });
     });
+    return true;
+  }
+  if (msg && msg.type === 'tb:flow') {
+    handleFlowBridge(msg, sendResponse); // flow 库（broker HTTP 直连）
+    return true;
+  }
+  if (msg && msg.type === 'tb:flowrec') {
+    handleFlowRec(msg, sender.tab && sender.tab.id, sendResponse); // 录制会话续存
     return true;
   }
   if (typeof msg.type === 'string' && msg.type.startsWith('filter:')) {
@@ -737,6 +813,7 @@ chrome.tabs.onActivated.addListener(() => updateBadge());
 chrome.tabs.onRemoved.addListener((tabId) => {
   dropEntry(tabId, 'tab removed');
   chrome.storage.session.remove('mark:' + tabId).catch(() => {}); // tab 没了标记才清
+  chrome.storage.session.remove('flowrec:' + tabId).catch(() => {}); // 录制会话随 tab 清
 });
 
 reloadFilterCfg().then(() => log(`whitelist loaded: ${filterCfg.enabled === false ? 'disabled' : 'enabled'}, domains=${filterCfg.domains.length}, regexes=${filterCfg.regexes.length}`));

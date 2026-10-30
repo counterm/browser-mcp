@@ -8,6 +8,8 @@
   python cli_client.py snap <pid或URL子串>         # 看某页快照
   python cli_client.py call <pid> <JSON命令>       # 单条命令
   python cli_client.py run "任务描述" --match github.com   # LLM 自动操控（需环境变量）
+  python cli_client.py flow <flow.yaml> [--page 标记]      # 跑 YAML 测试流（CI 入口）
+       [--var k=v ...] [--from-step s03] [--keep-going]     # 详见 docs/spec-flow.md
        环境变量: OPENAI_API_KEY / OPENAI_BASE_URL(可选) / BRIDGE_MODEL(可选)
 """
 import argparse
@@ -135,6 +137,47 @@ def run(task, match=None, max_steps=25, wait_secs=60):
     return 1
 
 
+def flow(path, page=None, vars_list=None, from_step=None, keep_going=False):
+    """跑 YAML 测试流：读文件 → POST /flows/run → 逐步打印 → 退出码 0/1（CI 用）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            yaml_text = f.read()
+    except OSError as e:
+        print(f"[flow] 读不到文件：{e}")
+        return 2
+    variables = {}
+    for kv in vars_list or []:
+        k, _, v = kv.partition("=")
+        variables[k.strip()] = v
+    body = {"yaml": yaml_text, "page": page,
+            "vars": variables or None, "from_step": from_step,
+            "stop_on_fail": not keep_going}
+    try:
+        report = http("POST", "/flows/run", body=body, timeout=900)
+    except Exception as e:
+        print(f"[flow] 执行失败：{e}（broker 在跑吗？）")
+        return 2
+    if report.get("error"):
+        print(f"[flow] {report['error']}")
+        return 2
+    for s in report.get("steps", []):
+        line = ("OK  " if s.get("ok") else "FAIL") + f" {s.get('id')} {s.get('do')}"
+        if s.get("params"):
+            line += f"  {s['params']}"
+        if not s.get("ok"):
+            line += f"\n     └─ {s.get('error')}"
+        if s.get("path"):
+            line += f"\n     └─ 截图: {s['path']}"
+        print(line)
+    print(f"[flow] {report.get('flow')}: 通过 {report.get('passed')}/{report.get('total')}"
+          + ("" if report.get("ok") else "（有失败）"))
+    if report.get("data_rows"):
+        print(f"[flow] 数据组：{report.get('passed_rows')}/{report.get('data_rows')} 组通过")
+    if report.get("report_path"):
+        print(f"[flow] 报告: {report['report_path']}")
+    return 0 if report.get("ok") else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -146,6 +189,12 @@ def main():
     p_run.add_argument("task")
     p_run.add_argument("--match", default=None, help="URL 子串/正则，用于校验是否接入")
     p_run.add_argument("--max-steps", type=int, default=25)
+    p_flow = sub.add_parser("flow")
+    p_flow.add_argument("path", help="flow YAML 文件路径")
+    p_flow.add_argument("--page", default=None, help="页面标记 id 或 pid（只有一个在线页面时可省略）")
+    p_flow.add_argument("--var", action="append", default=[], metavar="K=V", help="覆盖 ${vars.x}，可多次")
+    p_flow.add_argument("--from-step", dest="from_step", default=None, help="从指定步骤 id 开始跑")
+    p_flow.add_argument("--keep-going", action="store_true", help="失败不中断（步骤级 on_fail 仍生效）")
     args = ap.parse_args()
 
     if args.cmd == "list":
@@ -164,6 +213,8 @@ def main():
         print(json.dumps(call(page["id"], json.loads(args.json_cmd)), ensure_ascii=False, indent=2))
     elif args.cmd == "run":
         sys.exit(run(args.task, args.match, args.max_steps))
+    elif args.cmd == "flow":
+        sys.exit(flow(args.path, args.page, args.var, args.from_step, args.keep_going))
 
 
 if __name__ == "__main__":

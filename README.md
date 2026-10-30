@@ -24,10 +24,11 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | 文件 | 作用 |
 |---|---|
 | `broker.py` | 本地注册/广播/转发中心，**同时就是一个 MCP 服务器**。维护在线页面表，把外部命令转发给对应页面并等结果。通过 MCP 接入时它就是那个 MCP 服务进程；**唯一需要常驻运行的进程** |
-| `requirements.txt` | broker 的 Python 依赖（仅 aiohttp） |
+| `requirements.txt` | broker 的 Python 依赖（aiohttp；pyyaml 供 flow 功能） |
 | `.mcp.json` | 本机生效的 MCP 接入配置（stdio 方式，MCP 客户端自动拉起 broker） |
 | `.mcp.example.json` | 可复制的 MCP 配置模板，把 `args` 里的路径改成你的 `broker.py` 绝对路径即可 |
-| `cli_client.py` | 外部 CLI 接入示例（纯标准库）：发现 → 校验 URL → 接入 → LLM 驱动循环 |
+| `cli_client.py` | 外部 CLI 接入示例（纯标准库）：发现 → 校验 URL → 接入 → LLM 驱动循环；`flow` 子命令跑 YAML 测试流（CI 入口） |
+| `flows/` | flow 库（YAML 测试流真相源，Git 友好；运行报告存 `.flows/`，见 `docs/spec-flow.md`） |
 | `chrome-extension/` | 接入端（唯一方案）：Chrome 扩展 MV3 |
 | ├ `manifest.json` | 扩展清单：权限、注入规则（`<all_urls>`，排除 broker 自身端口）、action popup、options 页 |
 | ├ `background.js` | Service Worker：每个标签页维持一条到 broker 的 WebSocket；命令路由（DOM 动作转发给 content，截图/标签管理自己执行）；站点白名单过滤；webRequest 观察模式接口捕获（URL/请求头/请求体/响应头） |
@@ -38,6 +39,7 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` / `plog` 查询转给页面捕获层 |
 | └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 早期油猴脚本版，**已停止维护、仅作存档**；接入请一律使用 Chrome 扩展 |
+| `docs/spec-flow.md` | YAML 测试流规范：schema、执行语义、断言、MCP/HTTP/CLI 接口 |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
 
 ## 快速开始
@@ -130,6 +132,7 @@ MCP 工具：
 | `page_snapshot` | `page?, max?, text_max?` | 实时快照（交互元素带 bid 编号 + 正文）。输出过大时用 `max`（元素条数，默认 300）/ `text_max`（正文字符数，默认 6000，0 省略正文）裁剪 |
 | `page_call` | `page?, action, timeout?, ...` | 下发任意命令，参数同下方命令表（click / type / nav / eval / dom / screenshot…）。元素定位 bid / selector / text 三选一；`screenshot` 返回落盘路径 `{format, path, bytes}`，用 Read 工具直接看图 |
 | `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **仅扩展版**：读取页面运行日志与异常（console / 未捕获异常 / Promise 拒绝 / 资源加载失败 / CSP），带 `t / iso / perf` 发生时间、行列号与堆栈。用 `since` + `doc` 游标增量拉取；`wait_ms>0` 时页面侧长轮询等待新异常（≤20s），适合动作后确认是否报错 |
+| `flow` | `op, name?, yaml?, page?, vars?, from_step?, stop_on_fail?, mode?, run_id?, wait_ms?` | **YAML 测试流**（[docs/spec-flow.md](docs/spec-flow.md)）：把页面操作序列编排成 YAML（每步唯一 id，步骤级 `retry` 可重试），逐步执行并汇总报告（每步 id/操作/值/OK/FAIL/耗时/URL，失败自动截图）；支持子流程（`do: flow`，嵌套≤5 层禁循环）与数据驱动（`data`/`data_file`，json/csv ≤200 组）。`op=list/get/save/delete/run/status`；执行时页面 console 打 `[flow:名]` 前缀轨迹，可用 `page_logs` 的 `q="[flow:"` 拉取。`run` 默认同步等完（MCP 上限 115s），`mode:"async"` 立即返回 `run_id` 后用 `op:"status"` 轮询（长流推荐）；短流程也可用 CLI `python cli_client.py flow <文件>`（CI 入口） |
 
 `page` 可传标记 id 或 pid；只有一个在线页面时可省略。工具调用与 `/call` 走同一条转发链路，超时上限同样 120s。
 
@@ -145,6 +148,10 @@ MCP 工具底层就是这套 HTTP 接口；自己写脚本/编排框架、或不
 | `GET /marks` | 列出全部页桥标记：`mark` / `online` / `pid` / `url` / `title` |
 | `GET /mark/{mark}` | 按标记查网页：返回在线状态、`pid`、URL、标题（离线时给最后一次的 URL） |
 | `POST /mark/{mark}` | 按标记执行命令（body 同 `/call/{pid}`，如 `{"action":"snapshot"}`） |
+| `GET /flows` | flow 库列表（YAML 测试流，[docs/spec-flow.md](docs/spec-flow.md)） |
+| `POST /flows/run` | 执行 flow：body `{name 或 yaml, page?, vars?, from_step?, stop_on_fail?, mode?}`，默认同步返回逐步报告 JSON（落盘 `.flows/`）；`mode:"async"` 立即返回 `{run_id, ...}` |
+| `GET /flows/status` | 异步进度轮询：`?run_id=xxx&wait_ms=0`，done 时带完整报告 |
+| `GET|PUT|DELETE /flow/{name}` | 读取 / 保存（body `{"yaml": "..."}`，解析校验后落 `flows/<名>.yaml`）/ 删除 flow |
 | `WS /client` | 长连接：收广播 + attach 页面 + 双向命令流（适合常驻会话） |
 
 ```powershell
@@ -191,6 +198,39 @@ curl -X POST http://127.0.0.1:8766/call/a1b2c3d4 -d "{\"action\":\"screenshot\"}
 | `tab_open` | `url, active?` | **仅扩展版**：新开标签页 |
 | `tab_close` | `tabId` | **仅扩展版**：关标签页（可传 pageId） |
 | `tab_activate` | `tabId` | **仅扩展版**：切换到某标签页（可传 pageId） |
+| `log` | `text, prefix?, level?` | 往页面 console 打一行（ISOLATED world 派发 `batb:flowlog` 由 MAIN world 代打，`plog` 可查）；flow 执行轨迹内部用它，外部也可用 |
+
+## YAML 测试流（flow）
+
+把页面操作序列编排成 YAML，由 broker 逐步执行并汇总报告——代替 Playwright 的轻量路线：
+**不引入 Node**，broker（Python + pyyaml）解析后逐条下发上表命令，扩展只做执行器。
+
+```yaml
+flow: demo-login
+desc: 登录并检查仪表盘
+vars: { user: admin }            # ${vars.user}；密码走 ${env.X} 不落盘
+steps:
+  - id: s01                      # 每步唯一 id，报告与轨迹按 id 输出
+    do: nav
+    url: https://example.com/login
+  - id: s02
+    do: type
+    selector: '#username'
+    text: ${vars.user}
+  - id: s03
+    do: click
+    selector: 'button[type=submit]'
+    text: 登录                    # selector 失败自动回退按文本定位
+    expect: { url_contains: /dashboard }   # 断言：url_contains / url_is / text / selector
+    max_wait_ms: 8000
+```
+
+- **执行**：MCP `flow {op:"run", name:"demo-login"}` 或 CLI `python cli_client.py flow flows/demo-login.yaml`（CI 入口，退出码 0/1）
+- **报告**：每步 `{id, do, 值, ok, ms, url, error?}`，失败自动截图；落盘 `.flows/` 并一次性返回（LLM 直接读）
+- **轨迹**：每步往页面 console 打 `[flow:名] s03 click … → OK 340ms`，LLM 可用 `page_logs {q:"[flow:"}` 自行拉取
+- **库管理**：`op=list/get/save/delete`，真相源是 `flows/*.yaml`（Git 友好），HTTP 端点见上表
+
+完整 schema / 变量替换 / secret 打码 / 语义与限制见 **[docs/spec-flow.md](docs/spec-flow.md)**；示例见 `flows/demo-smoke.yaml`。
 
 ## cli_client.py（现成的编排示例）
 
@@ -203,6 +243,9 @@ python cli_client.py call <pid> "{\"action\":\"snapshot\"}"
 # 一条龙：发现 → --match 校验 URL → 接入 → LLM 驱动循环直到 done
 # 环境变量: OPENAI_API_KEY（必需） OPENAI_BASE_URL（可选，兼容接口） BRIDGE_MODEL（可选）
 python cli_client.py run "在搜索框搜索 playwright 并打开第一个结果" --match github.com
+
+# 跑 YAML 测试流（CI 入口；逐步打印 OK/FAIL，退出码 0/1）
+python cli_client.py flow flows/demo-smoke.yaml --var user=admin --from-step s03
 ```
 
 `run` 的循环就是「snapshot → LLM 决策一个 JSON 命令 → POST /call → 结果回填 → 循环」，

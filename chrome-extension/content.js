@@ -400,6 +400,14 @@
 
     wait: async ({ ms = 1000 }) => { await sleep(Math.min(ms, 15000)); return `waited ${ms}ms`; },
 
+    // flow 执行轨迹回显（broker flow runner 每步一条，见 docs/spec-flow.md）：
+    // ISOLATED world 的 console 不经过 capture-main 的 hook（plog 抓不到），
+    // 经 DOM 事件桥让 MAIN world 代打，DevTools 可见、plog 可用 q="[flow:" 过滤
+    log: ({ prefix = '[flow]', text = '', level = 'log' }) => {
+      W.dispatchEvent(new CustomEvent('batb:flowlog', { detail: { prefix, text, level } }));
+      return 'ok';
+    },
+
     // eval userScripts 通道的结果回传：USER_SCRIPT world 把结果写在 <html data-ba-eval-<id>>，
     // 与内容脚本共享 DOM；取到即清除，没取到返回 null（SW 会继续轮询）
     eval_result: async ({ evalId }) => {

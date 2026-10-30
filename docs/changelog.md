@@ -2,6 +2,57 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序记录。
 
+## 2026-10-29 · feat: YAML 测试流（flow）编排扩展——子流程与数据驱动
+
+- `broker.py`：
+  - 子流程：新增编排动作 `do: flow {name, vars?}`——从库加载另一个 flow 校验后递归执行（同一目标页），报告该步嵌套子步骤（steps）与汇总（passed/total）；嵌套 ≤5 层、禁止循环引用（调用链写进失败原因），支持与 expect / retry / on_fail 组合；`vars` 先按父流程变量展开再覆盖子流程自身 vars
+  - 数据驱动：flow 级 `data`（内联列表，≤200 组、值须标量）或 `data_file`（相对 flows/ 目录解析，.json 对象数组 / .csv 首行表头，utf-8-sig 兼容；校验时即归一化为 doc.data），每组数据完整跑一遍全部步骤——组间互不影响（组内仍遵循 stop_on_fail / on_fail）；报告新增 `data_rows / passed_rows / failed_rows / rows` 汇总，步骤条目带 `row` 标记；console 轨迹每组一条 `▶ 数据组 i/N`（不回显组值）；异步进度 steps_total 按 步×组 计
+- `chrome-extension/toolbox/feats/build.js` + `docs/toolbox/feats/build.js`（两树同步）：报告渲染补数据组汇总行
+- `cli_client.py`：输出补数据组汇总行
+- 文档：`docs/spec-flow.md` 新增「子流程与数据驱动」「定时回归」（CLI + 计划任务 / Trae schedule 技能，无内置调度器）章节，do 表 / 字段表 / 分期状态更新；README 中英 flow 行更新
+- 验证：`py_compile` + `node --check` 全过；8770 端口假页面 E2E——`do: flow` 子流程嵌套执行（子步骤 1、子汇总 1/1、vars 透传）、data 2 组 × 2 步 = 4 条目全带 row 标记且 2/2 组通过（steps_total=4）、`m4-cyc` 自引用被拦截（FAIL + 调用链）、`data` 含非标量值校验 400；测试流程已从库删除，测试进程与产物已清理
+- 生效条件：重启 broker（MCP stdio 重连即可）；纯 broker 侧改动，扩展无需重载
+
+## 2026-10-28 · feat: YAML 测试流（flow）M3——异步执行与步骤级重试
+
+- `broker.py`：
+  - 异步执行：`flow op=run` 新增 `mode:"async"`（MCP 与 `POST /flows/run` 均可）→ 立即返回 `{run_id, status:"running", steps_total, poll}`，后台 asyncio 任务跑 runner；新增 `op=status {run_id, wait_ms?}`（长轮询上限 60s）与 `GET /flows/status?run_id&wait_ms` 取实时进度（done/passed/failed）与最终报告；runner 每步结束回写 `FLOW_RUNS` 进度；记录存内存，done 超 1h 或总量超 50 由 janitor 清理；公共逻辑抽为 `flow_start_async` / `flow_status`
+  - 步骤级重试：`retry`（额外次数，0~10）/ `retry_wait_ms`（间隔 ms，默认 1000，上限 60000），动作报错与断言不过都会重试，变量展开错误不重试，重试过程打 warn 级 console 轨迹，重试成功后报告清掉残留 error；flow_validate 校验数值范围
+  - MCP `flow` 工具 schema / 描述同步（新增 mode / run_id / wait_ms 参数与 status op）
+- `chrome-extension/background.js`：`tb:flow` 的 `run` 改走 `mode:"async"`，新增 `status`（`GET /flows/status`，wait_ms ≤ 30s 长轮询）
+- `chrome-extension/toolbox/feats/build.js` + `docs/toolbox/feats/build.js`（两树同步）：面板「运行」改为「启动 → 轮询进度（N/M 步）→ 渲染报告」，长流不再受单次请求超时限制
+- 文档：`docs/spec-flow.md`（retry/retry_wait_ms 字段、status op、/flows/status 端点、M3 落地说明）；README 中英 flow 行与 HTTP 表更新
+- 验证：`py_compile` + `node --check` 全过；8770 端口假页面 E2E——`retry:2` 时点击第 3 次成功（尝试 3 次、ms≈431）、async 启动返回 run_id、status@0 为 running、长轮询到 done 且报告 3/3 通过、非法 retry=99 校验 400、未知 run_id 404 / MCP isError；测试进程与产物已清理
+- 生效条件：重启 broker（MCP stdio 重连即可）；工具箱运行异步化需重载扩展并刷新页面
+
+## 2026-10-28 · feat: YAML 测试流（flow）M2——工具箱录制器实装与 flow 库桥
+
+- `chrome-extension/toolbox/feats/build.js` + `docs/toolbox/feats/build.js`（两树同步）：mock `record` 实装为「操作录制 → flow」（★2 → ★3 高级，功能总数不变 36/32）
+  - 录制引擎（模块级）：capture 阶段 hook click / change / Enter；输入 change（失焦）记录、下拉记 value、勾选框记点击、密码记 `${env.PWD}` + `secret:true`；起始 URL 自动为首条 nav；input/textarea/select 聚焦点击与工具箱自身 DOM 不录；selector 用 `B.sel.bestSelector`，点击步附可见文本作运行时回退定位
+  - 面板：flow 名 / 描述、开始/停止/清空、步骤列表（单步删除 + 「⇄变量」把录制值转 `${vars.vN}`）、YAML 实时预览、复制 / 下载 / 保存入库、粘贴 YAML 导入保存（服务端校验）、flow 库列表（运行 / 查看 YAML / 删除）、一键运行并以本页页桥标记为目标页渲染报告；原型树无扩展桥时录制与复制 / 下载可用，库功能给提示
+  - 跨页续录：录制会话存 background `chrome.storage.session`（`flowrec:<tabId>`，tab 关闭即清）；工具箱每次注入 `tb:flowrec get` 询问，URL 变了由 background 自动补 nav 步骤
+- `chrome-extension/background.js`：新增 `tb:flow`（`brokerFetch` 直连 broker HTTP：list/get/save/delete/run，真相源仍是磁盘 `flows/*.yaml`，无副本）与 `tb:flowrec`（录制会话 get/set/clear，get 时跨页自动补 nav）；`onRemoved` 随 tab 清录制会话
+- 文档：`docs/spec-flow.md` M2 落地细节与已知边界（含 BRIDGE_TOKEN 401 说明）；`docs/toolbox-proto-map.md` record 行更新
+- 验证：`node --check` 全过（两树 build.js + background.js）；生效需重载扩展并刷新页面
+- 待做（M3）：异步执行（run_id + `op=status` 轮询）、步骤级 retry
+
+## 2026-10-28 · feat: YAML 测试流（flow）M1——编排、执行、报告与 console 轨迹
+
+- 新增 **YAML 测试流**：把页面操作序列编排成 YAML（每步唯一 id），broker 逐步执行并汇总报告——代替 Playwright 的轻量路线，不引入 Node，复用 page_call 全部命令；规范见 `docs/spec-flow.md`，示例 `flows/demo-smoke.yaml`
+- `broker.py`：
+  - flow runner：`do` 白名单（页面 ACTIONS 剔除 ping/snapshot/plog）、`${vars.x}` / `${env.NAME}` 变量展开（未定义即报错）、`secret` 步骤打码、`expect` 断言（url_contains / url_is / text / selector，0.3s 轮询至 `max_wait_ms`）、nav/back/reload 后 0.5s 缓冲、失败自动截图、报告落盘 `.flows/<flow>-<runid>.json`
+  - MCP 新工具 `flow`（op=list/get/save/delete/run，风格同 netlog）：save 解析+校验（结构 / id 唯一 / do 白名单 / expect 键 / on_fail 枚举）后按原文落盘 `flows/<名>.yaml`（保留注释）；run 同步执行返回报告 JSON（MCP 等待上限 115s，长流程走 CLI）；initialize instructions 补 flow 一句
+  - HTTP 端点：`GET /flows`、`POST /flows/run`、`GET|PUT|DELETE /flow/{name}`（CLI / 后续扩展桥共用）
+  - 依赖：`requirements.txt` 加 `pyyaml>=6.0`（缺失时仅 flow 不可用，其余功能不受影响）
+- `chrome-extension/content.js`：新增 `log` 动作——派发 `batb:flowlog` DOM 事件（ISOLATED world 的 console 过不了 capture-main 的 hook，plog 抓不到）
+- `chrome-extension/capture-main.js`：监听 `batb:flowlog` 在 MAIN world 代打 console（`[flow:名]` 前缀 + 步骤/操作/值/OK/FAIL/耗时，失败为 error 级），DevTools 可见、`page_logs {q:"[flow:"}` 可拉整条轨迹
+- `chrome-extension/background.js`：`CONTENT_ACTIONS` 注册 `log`
+- `cli_client.py`：`flow` 子命令（`--page / --var k=v / --from-step / --keep-going`），逐步打印 OK/FAIL，退出码 0/1，CI 入口
+- 文档：`docs/spec-flow.md`（新）；README / README.en.md 增补 flow 工具表、HTTP 端点、命令表 `log` 行、「YAML 测试流」章节与文件表；`.gitignore` 加 `.flows/`
+- 验证：`py_compile` + `node --check` 通过；8770 端口起测试 broker，端点冒烟（list/save/get/校验失败/run 无页面 409/delete/MCP tools 含 flow）与「假页面」E2E（断言、失败自动截图、on_fail: continue、stop_on_fail 中断、报告落盘）全部通过，测试进程已清理
+- 生效条件：**重启 broker**（MCP stdio 方式重连即可）；`log` 动作需重载扩展并刷新页面后才有 console 轨迹，未刷新不影响其余功能（回显失败静默跳过）
+- 后续：M2 工具箱录制器（实装 mock `record`）+ flow 库桥（background HTTP 直写）；M3 异步执行 + `op=status` 轮询
+
 ## 2026-10-28 · 文档：全仓清理「油猴」表述，明确扩展为唯一接入方式
 
 - `broker.py`：模块 docstring 与「没有页面接入」错误提示改为 Chrome 扩展；`/lp/*` 长轮询标注为早期油猴版的兼容保留通道

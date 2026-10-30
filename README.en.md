@@ -24,10 +24,11 @@ Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 | File | Purpose |
 |---|---|
 | `broker.py` | Local registry / broadcast / forwarding hub, **and an MCP server at the same time**. Keeps the online-page table, forwards external commands to the right page and waits for results. When accessed via MCP it *is* the MCP server process; **the only process that must stay running** |
-| `requirements.txt` | Python dependencies for the broker (aiohttp only) |
+| `requirements.txt` | Python dependencies for the broker (aiohttp; pyyaml for the flow feature) |
 | `.mcp.json` | The machine-local MCP client config (stdio; the MCP client launches the broker automatically) |
 | `.mcp.example.json` | A copyable MCP config template — change the path in `args` to your own absolute `broker.py` path |
-| `cli_client.py` | Reference external CLI client (stdlib only): discover → validate URL → attach → LLM-driven loop |
+| `cli_client.py` | Reference external CLI client (stdlib only): discover → validate URL → attach → LLM-driven loop; the `flow` subcommand runs YAML test flows (CI entry point) |
+| `flows/` | The flow library (source of truth for YAML test flows, Git-friendly; run reports go to `.flows/`, see `docs/spec-flow.md`) |
 | `chrome-extension/` | Connector option A (recommended): Chrome extension MV3 |
 | ├ `manifest.json` | Extension manifest: permissions, injection rules (`<all_urls>`, excluding the broker's own port), action popup, options page |
 | ├ `background.js` | Service worker: one WebSocket per tab to the broker; command routing (DOM actions go to content, screenshots/tab management run here); site allowlist filtering; webRequest observational capture of API calls (URL/request headers/request body/response headers) |
@@ -38,6 +39,7 @@ Current version: **v0.1.16** (see `chrome-extension/manifest.json`)
 | ├ `content.js` | Content script: one instance per tab, responsible for DOM snapshots and action execution (click/type/eval, etc.); also relays extension-bridge messages for the in-page toolbox (`batb:bridge` → background) and forwards LLM `netlog` / `plog` queries to the page capture layer |
 | └ `toolbox/` | In-page toolbox (production build of the design prototype in `docs/toolbox/`): 14 zero-build modules injected into the page MAIN world by background according to the allowlist; six categories, 36 features (Info / Find / Style & Blocking / Send to LLM / Dev Artifacts / Capture) |
 | `page-bridge.user.js` | Legacy userscript version, **unmaintained, kept for archive only**; always use the Chrome extension for connecting |
+| `docs/spec-flow.md` | YAML test-flow spec: schema, execution semantics, assertions, MCP/HTTP/CLI interfaces |
 | `docs/research/1.md` | Early research notes (how console injection works and where it hurts) |
 
 ### Quick start
@@ -130,6 +132,7 @@ MCP tools:
 | `page_snapshot` | `page?, max?, text_max?` | Live snapshot (interactive elements with bid numbers plus body text). Trim oversized output with `max` (element count, default 300) / `text_max` (body text chars, default 6000, 0 omits text) |
 | `page_call` | `page?, action, timeout?, ...` | Dispatch any command; parameters match the command table below (click / type / nav / eval / dom / screenshot…). Locate elements via bid / selector / text; `screenshot` returns a saved-file path `{format, path, bytes}` — view it with the Read tool |
 | `page_logs` | `page?, since?, doc?, kinds?, levels?, q?, limit?, text_max?, wait_ms?, clear?, redact?` | **Extension only**: read page runtime logs and errors (console / uncaught exceptions / promise rejections / failed resources / CSP), with `t / iso / perf` timestamps, line/column numbers and stacks. Pull incrementally with the `since` + `doc` cursors; with `wait_ms>0` the page long-polls for new errors (≤20s), handy for confirming whether an action threw |
+| `flow` | `op, name?, yaml?, page?, vars?, from_step?, stop_on_fail?, mode?, run_id?, wait_ms?` | **YAML test flows** ([docs/spec-flow.md](docs/spec-flow.md)): orchestrate page-action sequences as YAML (each step has a unique id, step-level `retry` supported), executed step by step with a summary report (per-step id/action/values/OK/FAIL/duration/URL, auto screenshot on failure); supports subflows (`do: flow`, nesting ≤5, cycles rejected) and data-driven runs (`data`/`data_file`, json/csv ≤200 rows). `op=list/get/save/delete/run/status`; while running, each step echoes a `[flow:<name>]`-prefixed line to the page console — pull the whole trace via `page_logs` with `q="[flow:"`. `run` waits synchronously by default (115s MCP cap); `mode:"async"` returns a `run_id` immediately for polling via `op:"status"` (recommended for long flows); short flows can also use the CLI `python cli_client.py flow <file>` (CI entry point) |
 
 `page` accepts a mark id or pid; it can be omitted when only one page is online. Tool calls share the same forwarding path as `/call`, with the same 120s timeout ceiling.
 
@@ -145,6 +148,10 @@ The MCP tools are a thin layer over these HTTP endpoints; scripts, custom orches
 | `GET /marks` | List all page-bridge marks: `mark` / `online` / `pid` / `url` / `title` |
 | `GET /mark/{mark}` | Look up a page by mark: returns online state, `pid`, URL, title (last known URL when offline) |
 | `POST /mark/{mark}` | Execute a command by mark (body same as `/call/{pid}`, e.g. `{"action":"snapshot"}`) |
+| `GET /flows` | Flow library listing (YAML test flows, [docs/spec-flow.md](docs/spec-flow.md)) |
+| `POST /flows/run` | Run a flow: body `{name or yaml, page?, vars?, from_step?, stop_on_fail?, mode?}`; by default waits and returns the step-by-step report JSON (saved under `.flows/`); `mode:"async"` returns `{run_id, ...}` immediately |
+| `GET /flows/status` | Poll async run progress: `?run_id=xxx&wait_ms=0`; the full report is included once done |
+| `GET|PUT|DELETE /flow/{name}` | Read / save (body `{"yaml": "..."}`, parsed + validated into `flows/<name>.yaml`) / delete a flow |
 | `WS /client` | Long-lived connection: broadcasts + attach + bidirectional command stream (good for resident sessions) |
 
 ```powershell
@@ -191,6 +198,40 @@ Locate an element by one of three params: `bid` = element number from a snapshot
 | `tab_open` | `url, active?` | **Extension only**: open a new tab |
 | `tab_close` | `tabId` | **Extension only**: close a tab (accepts a pageId) |
 | `tab_activate` | `tabId` | **Extension only**: switch to a tab (accepts a pageId) |
+| `log` | `text, prefix?, level?` | Print one line to the page console (ISOLATED world dispatches `batb:flowlog`, echoed by the MAIN world; visible to `plog`). Used internally by the flow trace, but available to external callers too |
+
+### YAML test flows (flow)
+
+Orchestrate page-action sequences as YAML and let the broker execute them step by step with a summary report —
+a lightweight Playwright replacement: **no Node required**; the broker (Python + pyyaml) parses the YAML and
+dispatches the commands from the table above, the extension stays a pure executor.
+
+```yaml
+flow: demo-login
+desc: Log in and check the dashboard
+vars: { user: admin }            # ${vars.user}; passwords go through ${env.X}, never stored
+steps:
+  - id: s01                      # unique per step; the report and trace reference it
+    do: nav
+    url: https://example.com/login
+  - id: s02
+    do: type
+    selector: '#username'
+    text: ${vars.user}
+  - id: s03
+    do: click
+    selector: 'button[type=submit]'
+    text: Log in                 # falls back to text matching when the selector misses
+    expect: { url_contains: /dashboard }   # assertions: url_contains / url_is / text / selector
+    max_wait_ms: 8000
+```
+
+- **Run**: MCP `flow {op:"run", name:"demo-login"}` or CLI `python cli_client.py flow flows/demo-login.yaml` (CI entry point; exit code 0/1)
+- **Report**: per step `{id, do, values, ok, ms, url, error?}`, auto screenshot on failure; saved under `.flows/` and returned in one shot (the LLM reads it directly)
+- **Trace**: each step prints `[flow:<name>] s03 click … → OK 340ms` to the page console; the LLM can pull it via `page_logs {q:"[flow:"}`
+- **Library**: `op=list/get/save/delete`; the source of truth is `flows/*.yaml` (Git-friendly); HTTP endpoints in the table above
+
+Full schema / variable substitution / secret masking / semantics and limits in **[docs/spec-flow.md](docs/spec-flow.md)**; example in `flows/demo-smoke.yaml`.
 
 ### cli_client.py (a ready-made orchestration example)
 
@@ -203,6 +244,9 @@ python cli_client.py call <pid> "{\"action\":\"snapshot\"}"
 # All in one: discover → validate URL via --match → attach → LLM-driven loop until done
 # Environment variables: OPENAI_API_KEY (required) OPENAI_BASE_URL (optional, compatible APIs) BRIDGE_MODEL (optional)
 python cli_client.py run "search for playwright in the search box and open the first result" --match github.com
+
+# Run a YAML test flow (CI entry point; prints OK/FAIL per step, exit code 0/1)
+python cli_client.py flow flows/demo-smoke.yaml --var user=admin --from-step s03
 ```
 
 The `run` loop is exactly "snapshot → LLM decides on one JSON command → POST /call → feed the result back → repeat";
