@@ -199,24 +199,78 @@
     return document.querySelector(s); // 也接受 CSS selector
   }
 
+  // CSS 选择器命中多个节点时优先取可见的那个：框架常把同名 aria-label 挂在隐藏节点上
+  // （如 el-drawer 的关闭按钮排在 el-dialog 的关闭按钮之前），querySelector 只能拿到隐藏的，
+  // 动作会「执行成功但毫无效果」。若录制时带了 x / y（页面绝对坐标），多个可见候选里取中心点
+  // 最近的那个——可见元素仍可能同构重复（列表里每个「详情」按钮），只靠「第一个可见」会点错行。
+  // 坐标换算统一用 getBoundingClientRect + scrollX / scrollY，回放时页面滚动到别处也不影响。
+  // 全部不可见时退回首个命中，保持旧行为。带 text 时先按文本过滤候选：过滤后为空 → locate 抛
+  // element not found → flowrun 的 auto-wait 继续轮询，等新页面渲染完再取，而不是点旧页面的同构位置。
+  function selectorPick(sel, p) {
+    const list = [...document.querySelectorAll(sel)].filter((el) => textHit(el, p && p.text));
+    const vis = list.filter(isVisible);
+    const pool = vis.length ? vis : list.slice(0, 1);
+    const x = Number(p && p.x), y = Number(p && p.y);
+    if (pool.length > 1 && isFinite(x) && isFinite(y)) {
+      let best = pool[0], bestD = Infinity;
+      for (const el of pool) {
+        const r = el.getBoundingClientRect();
+        const dx = r.left + r.width / 2 + (W.scrollX || 0) - x;
+        const dy = r.top + r.height / 2 + (W.scrollY || 0) - y;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = el; }
+      }
+      return best;
+    }
+    return pool[0] || null;
+  }
+
+  // 命中的节点是否与录制时的可见文本一致。录制 click 时会把目标 innerText 前 40 字写进 text，
+  // 回放时它就是「这是不是同一个按钮」的凭据：SPA 路由切换的瞬间旧页面节点还挂在 DOM 里，
+  // 位置化选择器（nth-of-type）照样能命中旧页面的同构按钮（例：菜单管理页的「新增」抢在
+  // 账号管理页的「新增用户」之前被点中），点下去弹的是旧页面的弹窗。归一化空白 + 忽略大小写 +
+  // 包含匹配（录制侧截断到 40 字，不能全等）。
+  function textHit(el, want) {
+    if (want == null) return true;
+    const w = String(want).replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!w) return true;
+    return elText(el).replace(/\s+/g, ' ').trim().toLowerCase().includes(w);
+  }
+
   // 定位参数三选一：bid（快照元素编号）/ selector（CSS）/ text（按可见文本匹配）。
   // 快照没给 bid 的元素（自绘组件、动态插入等）用 text 也能点。
   const elText = (el) => ((el.innerText || el.value
     || el.getAttribute('aria-label') || el.getAttribute('title') || '') + '');
+
+  // 元素是否真的可见：按 text 定位必须过这一关，否则会点到下拉菜单里同名的隐藏项
+  // （例：点「修改」命中隐藏的「修改密码」，弹错窗口）
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.getClientRects().length === 0) return false;
+    const st = W.getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0';
+  }
 
   function findByText(text) {
     const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const q = norm(text);
     if (!q) return null;
     const pool = index.size ? [...index.values()] : [...document.querySelectorAll(INTERACTIVE)];
-    let partial = null;
+    let partial = null, hiddenExact = null;
     for (const el of pool) {
       const t = norm(elText(el));
       if (!t) continue;
-      if (t === q) return el;
-      if (!partial && (t.includes(q) || q.includes(t))) partial = el;
+      const visible = isVisible(el);
+      if (t === q) {
+        if (visible) return el;
+        if (!hiddenExact) hiddenExact = el;
+        continue;
+      }
+      // 只允许「实际文本包含目标文本」：反方向 q.includes(t) 会让短标签（「新增」）顶替长标签
+      // （「新增用户」），SPA 路由切换时就会点到旧页面同构按钮
+      if (!partial && visible && t.includes(q)) partial = el;
     }
-    return partial;
+    return hiddenExact || partial;
   }
 
   /**
@@ -232,7 +286,7 @@
     }
     if (p && p.selector) {
       tried.push(`selector=${p.selector}`);
-      const el = resolve(p.selector);
+      const el = /^\d+$/.test(String(p.selector)) ? resolve(p.selector) : selectorPick(p.selector, p);
       if (el) return el;
     }
     if (p && p.text != null && p.text !== '') {
@@ -259,6 +313,15 @@
 
   // React/Vue 受控组件必须走原生 setter + input/change 事件
   function setValue(el, text) {
+    const inputable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
+    if (!inputable) {
+      // 选择器命中了非输入元素（常见于 el-id-xxx 这类框架自动 id 漂移），
+      // 直接调 value setter 只会报无方向的 "Illegal invocation"
+      const desc = el.tagName.toLowerCase()
+        + (el.id ? `#${el.id}` : '') + (el.className ? `.${String(el.className).trim().split(/\s+/)[0]}` : '');
+      throw new Error(`目标不可输入：<${desc}>，type 需要 input / textarea / contenteditable`
+        + '（确认 selector 是否指向输入框，或改用 bid）');
+    }
     el.focus();
     if (el.isContentEditable) {
       el.textContent = text;
@@ -304,13 +367,15 @@
 
     type: async (p) => {
       const { text = '', clear = true } = p;
-      const el = locate(p);
+      // text 是输入值，不能同时当定位条件：选择器失效时会按"文本包含输入值"误命中别的元素
+      const ref = { bid: p.bid, selector: p.selector };
+      const el = locate(ref);
       el.scrollIntoView({ block: 'center' });
       el.focus();
       if (clear) setValue(el, '');
       if (text) setValue(el, text);
       await sleep(100);
-      return `typed into [${refLabel(p)}]`;
+      return `typed into [${refLabel(ref)}]`;
     },
 
     press: async ({ key, ...ref }) => {
@@ -484,6 +549,10 @@
     } catch { return String(v); }
   }
 
+  // 自检挂载点：diag.js 先于本脚本加载，这里只把动作表交给它（就地包装，flowrun 拿到的
+  // __batbExec.ACTIONS 是同一份对象）。diag 缺席时静默跳过，自检不能成为新的故障源。
+  try { globalThis.__batbDiag?.wrapActions?.(ACTIONS); } catch {}
+
   // flowrun.js（独立内容脚本）复用同一套动作实现；同一隔离世界共享 globalThis
   globalThis.__batbExec = { ACTIONS, pageInfo, sleep, W, locate, serialize };
 
@@ -546,6 +615,12 @@
   /* ============ 5. 工具箱桥：MAIN world ↔ background（整页截图等扩展级能力） ============
    * 工具箱注入在页面主世界，收不到扩展消息；用 DOM 事件当桥：
    * batb:bridge（请求）→ runtime 消息 → background 执行 → batb:bridge:res（回传结果）。 */
+  /* 全局配置广播：background 改了 chrome.storage.local 后推给所有已注入页面 */
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'tbxcfg') {
+      window.dispatchEvent(new CustomEvent('batb:cfg', { detail: msg.cfg || {} }));
+    }
+  });
   window.addEventListener('batb:bridge', (ev) => {
     const { id, action, params } = ev.detail || {};
     if (id == null || !action) return;

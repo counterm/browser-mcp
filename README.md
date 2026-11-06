@@ -39,11 +39,13 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | ├ `options.html` / `options.js` | 完整配置页：域名列表与正则规则的增删改查、导入导出、正则实时测试面板 |
 | ├ `capture-main.js` | 页面捕获层（`document_start` 注入 MAIN world）：包裹 fetch/XHR 抓请求体/响应体，与 bg 的 webRequest 头记录合并；同时 hook `console` / 未捕获异常 / 资源加载失败 / CSP，写入 `__BATB_LOG__` 供 `plog` 查询。接口部分供「接口调用」工具与 `netlog` 协议共用（见 `docs/spec-net-protocol.md`） |
 | ├ `content.js` | 内容脚本：每个标签页一个实例，负责 DOM 快照与动作执行（click/type/eval 等）；并为页面工具箱转发扩展桥消息（`batb:bridge` → background）、把 LLM 的 `netlog` / `plog` 查询转给页面捕获层 |
+| ├ `diag.js` | flow 自检 / 自报 / 自记录（内容脚本，加载顺序在 `content.js` 之前）：动作效果采样、失败取证（DOM 片段 + 日志尾部）、静态 lint、运行摘要写操作记录；其它模块只留锚点，检查逻辑全在这一处 |
 | ├ `flowrun.js` | flow 执行器（内容脚本）：解析 YAML（`vendor/js-yaml.min.js`）、逐步执行、断言 / 重试 / 数据组 / 子流程，跨页跳转后自动续跑；进度与报告经 background 上报 broker |
 | ├ `vendor/js-yaml.min.js` | js-yaml 4.1.0（随扩展打包；content 与 background 共用，无网络/无 Python 依赖） |
 | └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 早期油猴脚本版，**已停止维护、仅作存档**；接入请一律使用 Chrome 扩展 |
 | `docs/spec-flow.md` | YAML 测试流规范：schema、执行语义、断言、MCP/HTTP/CLI 接口 |
+| `docs/spec-diag.md` | flow 自检 / 自报 / 自记录模块：五类能力、数据 schema、容错降级与已知边界 |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
 
 ## 快速开始
@@ -114,7 +116,7 @@ curl http://127.0.0.1:8766/pages
 - 把 `args` 里的路径改成你的 `broker.py` **绝对路径**；走项目虚拟环境时把 `command` 换成 `…\\browser-agent\\.venv\\Scripts\\python.exe`
 - 进程内同时跑 stdio JSON-RPC 和 `127.0.0.1:8766` 中枢，页面照常接入；stdout 只留 JSON-RPC，日志全部走 stderr
 - 客户端断开（stdin EOF）后进程自动退出、端口释放
-- 同一端口只允许一个实例：已有 broker 在跑时 stdio 实例会报错退出，此时改用方式二
+- 同一端口只允许一个 broker：已有实例在跑时，stdio 实例会自动探测（`GET /pages`）并跳过自启，把请求转发给现有实例——**MCP 配置无需任何改动**，两种情况下同一份配置都能用
 - 不要把 `start-broker.bat` 配成 stdio 的 `command`——bat 的 echo 会污染 stdout
 
 **方式二：连已启动的 broker（HTTP URL）**（先跑 `start-broker.bat`；开了 `BRIDGE_TOKEN` 时 URL 追加 `?token=<token>`）：
@@ -232,6 +234,9 @@ steps:
 
 - **执行**：MCP `flow {op:"run", name:"demo-login"}`、CLI `python cli_client.py flow <本地.yaml>`、
   或工具箱「直接运行（不保存）」；执行体是目标页里的扩展脚本，跨页跳转自动续跑
+- **auto-wait**：定位类动作（click / type / select / hover / press）找不到元素时不立即失败，
+  在 `auto_wait_ms` 窗口（默认 5s，step 级可覆盖，0 关闭）内每 0.3s 重试定位——
+  录制的 flow 回放不必手写等待也能扛住路由切换后的异步渲染；显式等待仍用 `expect`
 - **报告**：每步 `{id, do, 值, ok, ms, url, error?}`，失败自动截图（dataUrl 内联，不落盘）并一次性返回（LLM 直接读）
 - **轨迹**：每步往页面 console 打 `[flow:名] s03 click … → OK 340ms`，LLM 可用 `page_logs {q:"[flow:"}` 自行拉取
 - **库管理**：`op=list/get/save/delete`，真相源是**扩展本地库**（`chrome.storage.local.flows`），
@@ -275,7 +280,7 @@ python cli_client.py flow flows/demo-smoke.yaml --var user=admin --from-step s03
 
 - **注入**：页面命中白名单后，background 经 `chrome.scripting` 把 `chrome-extension/toolbox/` 下 14 个模块注入**页面主世界**（MAIN world）——React fiber 反查、fetch 拦截、`window.__BA_*` 都要在页面上下文才可见；注入不受页面 CSP 限制
 - **门控即时生效**：白名单配置变更后，已注入页面经 DOM 事件 `batb:gate` 同步显隐——移出白名单立即隐藏，重新命中自动恢复；未注入过的命中页面自动补注入
-- **入口**：右下角圆形 FAB（可拖拽、位置记忆、`Alt+Shift+D` 唤起），六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
+- **入口**：右下角圆形 FAB（可拖拽、位置记忆、快捷键唤起，可在「设置」中更换），六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
 - **中英双语**：面板底部「EN / 中文」一键切换，默认中文，选择存 `localStorage` 刷新后保持；分类、功能名与说明、结果卡片、提示语等全部界面文案均有英文版本
 - **采集**：「网址二维码」把当前网址纯本地生成二维码（扫码在手机打开，可下载 PNG / 复制链接，内嵌 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) MIT 裁剪版）；「整页截图」滚动逐屏截取、拼接为长图并自动下载 PNG；「容器截图」拾取任意元素——可滚动容器只截其内部完整滚动范围（自动向上定位滚动祖先、逐屏裁剪拼接），普通元素截取当前可见区域——两类截图均自动处理浮动元素（fixed 临时隐藏、sticky 临时取消吸附，完成后还原），避免每屏重复；「接口调用」双层捕获页面请求——页面捕获层（`capture-main.js`，document_start 包裹 fetch/XHR）抓请求体/响应体 + webRequest 观察模式抓全量请求头（含 Cookie/Authorization），按 URL+时间合并，列表点开详情可**复制调试文本 / 复制 cURL** 粘给 LLM（默认脱敏 Cookie/token 等鉴权字段，可手动关）；截图两项均经**扩展桥**（content.js 中继 `batb:bridge` → background `captureVisibleTab`）实现，需 content.js 与扩展版本一致（更新扩展后刷新页面）
 - **接口调用的 LLM 查看通道**：LLM 经 broker 发 `netlog` 命令自主查询捕获记录（`list` 摘要 → `get` 详情 / `curl` 回放，无需人工点击），协议与局限详见 `docs/spec-net-protocol.md`

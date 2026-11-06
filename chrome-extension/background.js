@@ -859,6 +859,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+  if (msg && msg.type === 'tb:cfg') {
+    // 工具箱桥「全局配置」：扩展级 chrome.storage.local，所有页面共用（快捷键 / 直接复制等）
+    (async () => {
+      const KEY = 'tbxcfg';
+      const got = await chrome.storage.local.get(KEY);
+      const cfg = (got && got[KEY] && typeof got[KEY] === 'object') ? got[KEY] : {};
+      if (msg.op === 'set' && msg.patch && typeof msg.patch === 'object') {
+        Object.keys(msg.patch).forEach((k) => { cfg[k] = msg.patch[k]; });
+        await chrome.storage.local.set({ [KEY]: cfg });
+        /* 广播给所有已注入工具箱的标签页，快捷键 / 复制开关实时生效 */
+        chrome.tabs.query({}, (tabs) => {
+          (tabs || []).forEach((t) => {
+            if (t.id != null) chrome.tabs.sendMessage(t.id, { type: 'tbxcfg', cfg }).catch(() => {});
+          });
+        });
+      }
+      return cfg;
+    })().then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
   if (msg && msg.type === 'tb:flow') {
     handleFlowBridge(msg, sendResponse); // flow 库（扩展本地存储；运行经 broker 转发）
     return true;

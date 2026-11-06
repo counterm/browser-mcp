@@ -13,12 +13,13 @@
   const X = globalThis.__batbExec;
   if (!X || !X.ACTIONS) return; // content.js 未就绪：页面刷新后由新实例接管
   const { ACTIONS, sleep } = X;
+  const D = globalThis.__batbDiag || null; // 自检/取证/记录（diag.js）；缺席时整条链路静默跳过
 
   // 由 background 执行的浏览器级动作（页面内脚本做不到）
   const BG_ACTIONS = new Set(['screenshot', 'tab_list', 'tab_open', 'tab_close', 'tab_activate', 'eval']);
   // 步骤控制键：不作为动作参数下发
   const CTRL = new Set(['id', 'do', 'desc', 'expect', 'max_wait_ms', 'on_fail', 'secret',
-    'retry', 'retry_wait_ms']);
+    'retry', 'retry_wait_ms', 'auto_wait_ms']);
   const EXP_KEYS = new Set(['url_contains', 'url_is', 'text', 'selector']);
   const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
   const VAR_RE = /\$\{(vars|env)\.([A-Za-z0-9_.-]+)\}/g;
@@ -73,7 +74,8 @@
       if (s.on_fail != null && s.on_fail !== 'continue' && s.on_fail !== 'abort') {
         throw new Error(`步骤 ${sid}: on_fail 只支持 continue / abort`);
       }
-      for (const [k, hi] of [['retry', 10], ['retry_wait_ms', 60000], ['max_wait_ms', 30000]]) {
+      for (const [k, hi] of [['retry', 10], ['retry_wait_ms', 60000], ['max_wait_ms', 30000],
+        ['auto_wait_ms', 30000]]) {
         const v = s[k];
         if (v == null) continue;
         if (typeof v !== 'number' || !isFinite(v) || v < 0 || v > hi) throw new Error(`步骤 ${sid}: ${k} 必须是 0~${hi} 的数字`);
@@ -116,7 +118,7 @@
   }
 
   function brief(step, secret) {
-    const keys = ['bid', 'selector', 'text', 'url', 'value', 'key', 'dy', 'ms', 'code', 'op', 'area', 'name', 'tag', 'active'];
+    const keys = ['bid', 'selector', 'text', 'x', 'y', 'url', 'value', 'key', 'dy', 'ms', 'code', 'op', 'area', 'name', 'tag', 'active'];
     const parts = [];
     for (const k of keys) {
       let v = step[k];
@@ -169,6 +171,13 @@
 
   /* ============ 动作执行 ============ */
 
+  // 定位类动作常跑在数据渲染之前：点菜单后路由切换、表格异步加载 1s+，flow ~600ms 就冲到点行步骤，
+  // 元素此刻不存在不等于步骤失败（录制器只记稳态选择器、不生成等待）。找不到时在 auto_wait_ms
+  // 窗口内每 0.3s 重试定位（Playwright 式 auto-wait）；默认 5s，step 级可覆盖，0 关闭。
+  // 只对「element not found」生效，其余报错立即失败；显式等待语义仍推荐 expect。
+  const LOCATOR_ACTIONS = new Set(['click', 'type', 'select', 'hover', 'press']);
+  const AUTO_WAIT_DEFAULT = 5000;
+
   async function doAction(step, cmd) {
     const action = cmd.action;
     if (BG_ACTIONS.has(action)) {
@@ -177,7 +186,21 @@
       return r.data;
     }
     if (!ACTIONS[action]) throw new Error('不支持的动作：' + action);
-    return await ACTIONS[action](cmd);
+    const waitMs = Math.min(Math.max(
+      step.auto_wait_ms != null ? Number(step.auto_wait_ms) : AUTO_WAIT_DEFAULT, 0), 30000);
+    const deadline = now() + waitMs;
+    for (;;) {
+      try {
+        return await ACTIONS[action](cmd);
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        const miss = LOCATOR_ACTIONS.has(action) && msg.startsWith('element not found');
+        if (!miss || now() >= deadline) {
+          throw miss && waitMs > 0 ? new Error(`${msg}（auto-wait ${waitMs}ms 内元素未出现）`) : e;
+        }
+        await sleep(300);
+      }
+    }
   }
 
   async function loadFlow(name) {
@@ -294,6 +317,7 @@
     const where = `步骤 ${sid}` + (st.rows ? `（数据组 ${st.row + 1}）` : '');
     const entry = { id: sid, do: step.do, params: brief(step, !!step.secret), ok: false };
     if (st.rows) entry.row = st.row + 1;
+    try { D?.stepStart?.(step); } catch {}
 
     // 续跑判定：上一实例写了 pending 后页面被重建，才可能在当前文档里读到它。
     // nav/back/reload 本身就是跳转（URL 可能不变，如 reload），click/press 等按 URL 是否变化判定。
@@ -375,10 +399,13 @@
         const r = await send({ type: 'flow_bg', action: 'screenshot', params: {} });
         if (r && r.ok && r.data && r.data.dataUrl) entry.dataUrl = r.data.dataUrl;
       } catch {}
+      // 失败取证：目标 DOM 片段 + 页面日志尾部 + 当前弹窗标题，写进报告，免去人工复现
+      try { entry.evidence = await D?.collectEvidence?.(step, entry.error); } catch {}
     }
 
     entry.ms = Math.round(now() - t0);
     entry.url = location.href.slice(0, 300);
+    try { D?.stepEnd?.(entry); } catch {}
     const status = entry.ok ? 'OK'
       : `FAIL: ${entry.error || ''}` + (step.do === 'flow' ? `（${entry.passed || 0}/${entry.total || 0}）` : '');
     trace(st.doc.flow, `${sid} ${step.do} ${entry.params || '-'} → ${status} ${entry.ms}ms`,
@@ -412,6 +439,7 @@
       rep.failed_rows = rows.length - rep.passed_rows;
       rep.rows = rows;
     }
+    try { rep.diagnostics = D?.buildDiagnostics?.(rep, D?.lintFlow?.(st.doc)); } catch {}
     return rep;
   }
 
@@ -436,6 +464,8 @@
     }
     const rep = buildReport(st);
     send({ type: 'flow_report', run_id: st.run_id, report: rep });
+    // 自记录：运行摘要写入页面同源 localStorage（工具箱「操作记录」同一 key），不依赖 broker 常驻内存
+    try { D?.recordRun?.(rep); } catch {}
     await clearPersist();
     trace(st.doc.flow, `■ 执行结束：通过 ${rep.passed}/${rep.total}` +
       (st.rows ? `，数据组 ${rep.passed_rows}/${rep.data_rows}` : ''), rep.ok ? 'log' : 'error');

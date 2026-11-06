@@ -132,7 +132,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `elqa` | copy | 选中元素问答 | ★★★ |
 | `storectx` | store | 存入页面上下文（`__BA_CTX__` + `localStorage["ba:ctx"]`） | ★★★ |
 | `storeel` | store | 存入选中元素（`__BA_EL__`） | ★★ |
-| `marker` | store | 复制页桥标记（网页 id，扩展接入时用 JS 生成 → `chrome.storage.session` → broker `GET /mark/<id>`）；另有「MCP 提示页面」按钮，复制面向通用 MCP 工具的页面交接提示词 | ★★★ |
+| `marker` | copy | 复制页桥标记（网页 id，扩展接入时用 JS 生成 → `chrome.storage.session` → broker `GET /mark/<id>`）；另有「MCP 提示页面」按钮，复制面向通用 MCP 工具的页面交接提示词 | ★★★ |
 | `a11y` | copy | a11y 修复建议 | ★ 高级 |
 
 **feats/build.js（开发产物，6 项）**
@@ -142,7 +142,7 @@ core → cats → widgets → ui → picker → helpers → feats/{info,find,sty
 | `pwcode` | 生成 Playwright 代码 | ★★★ |
 | `userscript` | 生成油猴脚本骨架 | ★★★ |
 | `crawler` | 爬虫代码生成（Python） | ★★ |
-| `record` | 操作录制 → flow（实装：录制页面操作生成 YAML 测试流，复制 / 下载 / 保存入库；扩展版另有导入、粘贴直接运行、flow 库管理与一键运行，跨页由 background 续存自动补 nav，见 `docs/spec-flow.md`） | ★★★ 高级 |
+| `record` | 录制 flow（点击即开始录制，停止后按「设置 → 直接复制到剪贴板」自动复制 YAML，并始终写入「设置 → 操作记录」；不再有三级详情，跨页由 background 续存自动补 nav，见 `docs/spec-flow.md`） | ★★★ 高级 |
 | `runflow` | 运行 flow（独立磁贴：顶部粘贴 YAML 直接运行（不入库），下方列出扩展本地 flow 库，在当前页执行并实时显示进度 / 逐步报告，可查看 YAML / 删除；YAML 由页面内 `flowrun.js` 解析执行，broker 只转发，需扩展版 + 页面白名单） | ★★ |
 | `formkit` | 表单保存与填充（按站点存 `localStorage["ba:formkit"]` 回填 + 随机假数据填充，密码字段跳过；「复制」导出 JSON、「粘贴」按导出内容填充） | ★★★ |
 

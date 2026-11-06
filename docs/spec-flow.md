@@ -74,6 +74,7 @@ steps:                    # 必填，非空
 | `do` | 每步必填 | 动作名，见下表 |
 | `expect` | 可选 | 断言：`url_contains` / `url_is` / `text`（正文包含）/ `selector`（存在）。单键映射或列表；每 0.3s 轮询至 `max_wait_ms` |
 | `max_wait_ms` | 可选 | expect 轮询上限，默认 5000，上限 30000 |
+| `auto_wait_ms` | 可选 | 定位类动作（click / type / select / hover / press）的 auto-wait 窗口：报 `element not found` 时不立即失败，每 0.3s 重试定位直至元素出现；默认 5000，0 关闭，上限 30000。只兜「元素晚到」，其余报错立即失败 |
 | `retry` | 可选 | 失败后额外重试次数（总尝试 = retry+1，上限 10）。动作报错与断言不过都会重试；变量展开错误不重试 |
 | `retry_wait_ms` | 可选 | 每次重试间隔毫秒，默认 1000，上限 60000 |
 | `secret` | 可选 | true 时报告/轨迹里打码 `text` / `value` / `code` 值 |
@@ -95,6 +96,14 @@ flow   # 子流程（编排动作，见下文）
 - **`type` 的 `text` 是输入值**，不要同时用它做定位；用 `selector` / `bid` 定位。
 - 定位键 `bid` 是快照运行时编号，**不要写进 YAML**（每次运行都会变）；录制器只生成
   `selector`（`B.sel.bestSelector`）+ 可选 `text` 回退。
+- 点击步另带 `x` / `y`：录制时的**页面绝对坐标**（元素中心点 = `getBoundingClientRect` +
+  `scrollX` / `scrollY`）。回放时同一选择器命中多个可见节点（列表里每行一个「详情」按钮、
+  隐藏抽屉与弹窗共用 `aria-label`），定位取中心点离 `(x, y)` 最近的那个；比对用绝对坐标，
+  页面滚到别处也不影响。未提供坐标时退回「第一个可见节点」。
+- 点击步的 `text` 同时是**同节点校验**：选择器命中的节点文本对不上时视为未命中（继续走
+  `text` 兜底 / auto-wait），不点它。SPA 路由切换的瞬间旧页面节点仍在 DOM 里，位置化选择器
+  （`nth-of-type`）会先命中旧页面的同构按钮（例：菜单管理页的「新增」抢在账号管理页的
+  「新增用户」之前被点中，弹出的是旧页面的弹窗）。`type` 的 `text` 是输入值，不参与校验。
 - 变量替换：`${vars.x}`（flow `vars` + 运行参数合并）与 `${env.NAME}`（扩展设置里的
   `flowenv` 映射，缺了报错），作用于动作参数与 expect 值，支持嵌套结构。
 - `nav` / `back` / `reload` 后固定等 0.5s 再继续；真正等待页面就绪请写 `expect`。
@@ -142,17 +151,33 @@ steps: [...]              # 每组数据完整跑一遍，${vars.kw} 取当组�
 
 ## 执行语义
 
-1. 逐步执行；每步收集 `{id, do, params(脱敏), ok, ms, url(执行后), error?, expect?, row?, dataUrl?(截图)}`。
+1. 逐步执行；每步收集 `{id, do, params(脱敏), ok, ms, url(执行后), error?, expect?, row?, dataUrl?(截图),
+   warnings?(自检告警), evidence?(失败证据)}`。
 2. **跨页续跑**：动作执行前写 `pending` 到 session；若动作触发跳转，新页面实例发现 URL
    已变且 pending 属于 nav/click/press/back/reload，即判定该步完成并继续下一步。
-3. 失败（命令报错或断言不过）→ **自动截图**（`captureVisibleTab`，dataUrl 内联进报告，不落盘）；
+3. **auto-wait**：定位类动作找不到元素时不立即失败，在 `auto_wait_ms` 窗口（默认 5s，0 关闭）
+   内每 0.3s 重试定位——录制器只记稳态选择器、不生成等待，回放常跑在路由切换后的数据渲染之前，
+   靠这一层兜底（选择器命中但录制文本对不上也算「没找到」，见「字段说明」的同节点校验）；
+   显式等待语义（等 url / 正文 / selector）仍用 `expect`。
+4. 失败（命令报错或断言不过）→ **自动截图**（`captureVisibleTab`，dataUrl 内联进报告，不落盘）；
    `on_fail: continue` 放行，否则中断（`stop_on_fail=false` 时全量跑完）。
-4. `screenshot` 步骤返回 dataUrl，报告内联（工具箱渲染缩略图；CLI 只显示长度，避免刷屏）。
-5. **console 轨迹**：每步执行后往页面 console 打一行
+5. `screenshot` 步骤返回 dataUrl，报告内联（工具箱渲染缩略图；CLI 只显示长度，避免刷屏）。
+6. **console 轨迹**：每步执行后往页面 console 打一行
    `[flow:名] s04 click selector=… → OK 340ms`（FAIL 带原因，error 级别）。
    实现链：flowrun 调 content `log` 动作 → 派发 `batb:flowlog` → capture-main.js 在
    MAIN world 代打。LLM 拉轨迹：`page_logs {q: "[flow:"}`。
-6. **报告** JSON：同步返回；异步模式下由 broker 内存保留，`/flows/status` done 时返回。
+7. **报告** JSON：同步返回；异步模式下由 broker 内存保留，`/flows/status` done 时返回。
+8. **自检 / 自报 / 自记录**（实现全部集中在 `chrome-extension/diag.js`，其它文件只留锚点；模块细节、schema 与已知边界见 [docs/spec-diag.md](./spec-diag.md)）：
+   - 动作效果自检：flow 步骤内 `click` 采样 250ms 的 DOM 变化 + URL / 弹窗数变化，`type` / `select`
+     回读 `el.value`。无变化或回读不符 → `entry.warnings`（**只告警，不判失败**）。
+   - 失败取证：步骤失败时自动抓目标周围 DOM 片段、页面 console 尾部（warn/error）、当前弹窗标题，
+     写进 `entry.evidence`（单步 ≤8KB）。
+   - 静态 lint：运行开始时扫 YAML（`nth-of-type` 大序号、弹窗位置序号、纯位置点击无 `text`、
+     `type` 目标不像输入框、连续跳转步骤又关掉 auto-wait），写进 `report.diagnostics.lint`。
+   - 自报：`report.diagnostics = {lint[], warnings[]}`；工具箱报告逐条渲染，失败步可折叠看证据。
+   - 自记录：运行结束把摘要（通过率 / 失败步 / 告警 / lint）写进页面同源
+     `localStorage["ba:tbx-records"]`（与工具箱「操作记录」同一 key），即可回查，不依赖 broker 内存。
+   - 容错约定：`diag.js` 缺席或自身抛错时全部静默降级，自检绝不阻断 flow。
 
 ## 接口
 
@@ -206,15 +231,22 @@ python cli_client.py flow <本地flow.yaml> [--page mark] [--var k=v ...]
   content script 与 background 共用）；无 Python runner、无 pyyaml 依赖。
 - **录制**：capture 阶段 hook click / change / Enter；输入在 change（失焦）时记录，
   下拉记 value，勾选框记点击，密码记 `${env.PWD}` + `secret:true`；起始 URL 自动记为第一条 nav；
-  工具箱自身 DOM（Shadow Root）不录；selector 由 `B.sel.bestSelector` 生成，点击步附可见文本。
+  工具箱自身 DOM（Shadow Root）不录；selector 由 `B.sel.bestSelector` 生成，点击步附可见文本
+  与页面绝对坐标 `x` / `y`（用于同构节点消歧，见上文「字段说明」）。
+  生成优先级：data-testid → aria-label → name → **placeholder** → CSS 路径；**跳过框架自动 id**
+  （Element Plus `el-id-N-M`、React `:r0:`、MUI `mui-N`、Radix / HeadlessUI / Downshift 等），
+  这类 id 每次挂载都重新分配，回放时轻则找不到、重则命中别的元素（`type` 会因此报 `Illegal invocation`）。
   - 跨页续录：录制会话存 background `chrome.storage.session`（key `flowrec:<tabId>`）；
     工具箱每次注入时询问，URL 变了由 background 自动补一条 nav 步骤；tab 关闭即清。
-  - 导出 / 导入：复制 / 下载 YAML；粘贴后「导入保存」或「直接运行（不保存）」。
+  - 导出 / 导入：录制结束按「设置 → 直接复制到剪贴板」自动复制 YAML（默认开启），且结果始终写入
+    「设置 → 操作记录」（localStorage，约 100KB，可手动复制）；「运行 flow」磁贴可粘贴 YAML
+    直接运行或保存入库。
   - flow 库与运行（扩展版）：`tb:flow` 桥 → background 直接读写 `chrome.storage.local`；
     「运行」经 broker 转发给本页 `flowrun.js`，报告渲染进面板（截图内联为缩略图）。
 - **重试**：`retry`（额外次数，上限 10）/ `retry_wait_ms`（间隔，默认 1000）；动作报错与
   断言不过都会重试，变量展开错误不重试；重试成功后报告不留 error。
-- **已知边界**：`type` 不支持按 text 定位；iframe 内元素依赖现有 click/dom 能力；
+- **已知边界**：`type` 不支持按 text 定位（只用 bid / selector，`text` 恰好是输入值）；
+  目标不是 input / textarea / contenteditable 时报「目标不可输入」；iframe 内元素依赖现有 click/dom 能力；
   expect 的 `text` 读 `innerText`；`data_file` 不支持；`${env.X}` 只在扩展本地配置里取；
   录制依赖 toolbox 注入的白名单页面；broker 开启 `BRIDGE_TOKEN` 时工具箱的库操作 / 运行会 401。
 - **前置条件**：扩展更新后需**刷新页面**（content script / flowrun 才会换新）；运行目标页需已接入白名单。

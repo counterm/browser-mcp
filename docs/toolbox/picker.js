@@ -4,12 +4,22 @@ var el = B.u.el, clamp = B.u.clamp, esc = B.u.esc, toast = B.w.toast, t = B.t;
 var state = B.state, shadow = B.shadow, host = B.host;
 
 /* ---------- 选择器 ---------- */
+/* 框架自动生成的 id（Element Plus el-id-计数器-n / React useId :r0: / MUI / Radix …）
+   每次挂载都变，录进 flow 后轻则找不到、重则命中别的元素，必须跳过。 */
+var UNSTABLE_ID = /^(?:el-id-\d+-\d+|:r[0-9a-z]*:|mui-\d+|rc[-_][\w-]+|radix-[\w-]+|headlessui-[\w-]+|downshift-\d+|__BVID__|\d[\w-]*)$/i;
+function stableId(node){ return !!node.id && !UNSTABLE_ID.test(node.id); }
+function attrSel(name, value){
+  return '[' + name + '="' + String(value).replace(/([\\"])/g, '\\$1') + '"]';
+}
+/* 交互态 / 状态修饰类（hover-row、is-opened、is-draggable …）回放时并不成立，
+   写进选择器等于给自己埋雷（表格行录成 tr.el-table__row.hover-row 就永远匹配不到）。 */
+var STATE_CLS = /^(?:is-|hover-row$|current-row$|hover$|active$|focus$|selected$|expanded$|collapsed$|ascending$|descending$)/;
 function cssPath(node){
   var path = [];
   while(node && node.nodeType === 1 && path.length < 5){
     var sel = node.tagName.toLowerCase();
-    if(node.id){ path.unshift('#' + CSS.escape(node.id)); break; }
-    var cls = Array.prototype.filter.call(node.classList, function(c){ return !/^[0-9]/.test(c); }).slice(0, 2);
+    if(stableId(node)){ path.unshift('#' + CSS.escape(node.id)); break; }
+    var cls = Array.prototype.filter.call(node.classList, function(c){ return !/^[0-9]/.test(c) && !STATE_CLS.test(c); }).slice(0, 2);
     if(cls.length) sel += '.' + cls.map(CSS.escape).join('.');
     var parent = node.parentElement;
     if(parent){
@@ -23,12 +33,14 @@ function cssPath(node){
 }
 function bestSelector(node){
   if(!node || node.nodeType !== 1) return '';
-  if(node.id) return '#' + CSS.escape(node.id);
+  if(stableId(node)) return '#' + CSS.escape(node.id);
   var attrs = ['data-testid', 'data-test', 'data-cy'];
-  for(var i = 0; i < attrs.length; i++){ var v = node.getAttribute(attrs[i]); if(v) return '[' + attrs[i] + '="' + v + '"]'; }
-  var al = node.getAttribute('aria-label'); if(al) return '[aria-label="' + al + '"]';
+  for(var i = 0; i < attrs.length; i++){ var v = node.getAttribute(attrs[i]); if(v) return attrSel(attrs[i], v); }
+  var al = node.getAttribute('aria-label'); if(al) return attrSel('aria-label', al);
   var nm = node.getAttribute('name');
-  if(nm && /^(input|select|textarea|button|form)$/i.test(node.tagName)) return node.tagName.toLowerCase() + '[name="' + nm + '"]';
+  if(nm && /^(input|select|textarea|button|form)$/i.test(node.tagName)) return node.tagName.toLowerCase() + attrSel('name', nm);
+  var ph = node.getAttribute('placeholder');
+  if(ph && /^(input|textarea)$/i.test(node.tagName)) return node.tagName.toLowerCase() + attrSel('placeholder', ph);
   return cssPath(node);
 }
 var SCORE_RULES = [
@@ -36,9 +48,10 @@ var SCORE_RULES = [
   [/^#[a-zA-Z][\w-]{2,}$/, 90, '语义化 id', 'Semantic id'],
   [/^\[aria-label=/, 85, '无障碍属性', 'Accessibility attribute'],
   [/^\[name=/, 80, '表单 name', 'Form name'],
+  [/^\[placeholder=/, 75, '占位文本，较稳', 'Placeholder, fairly stable'],
   [/^\.[a-zA-Z][\w-]*$/, 50, '单类名，可能重复', 'Single class, may repeat'],
   [/nth-child|nth-of-type/, 15, '位置依赖，改版必炸', 'Position-dependent, breaks on redesign'],
-  [/^#[\d.]+$|^\._[\w-]+$/, 5, '自动生成，勿用', 'Auto-generated, avoid']
+  [/^#(el-id-\d+-\d+|:r[0-9a-z]*:|mui-\d+)|^#[\d.]+$|^\._[\w-]+$/, 5, '自动生成，勿用', 'Auto-generated, avoid']
 ];
 function scoreSelector(sel){
   for(var i = 0; i < SCORE_RULES.length; i++) if(SCORE_RULES[i][0].test(sel)) return { score: SCORE_RULES[i][1], why: t(SCORE_RULES[i][2], SCORE_RULES[i][3]) };

@@ -6,6 +6,7 @@ var $$ = B.u.$$, el = B.u.el, esc = B.u.esc, copyText = B.u.copyText, t = B.t;
 var kv = B.w.kv, note = B.w.note, btn = B.w.btn, badge = B.w.badge, scoreBadge = B.w.scoreBadge, codeBox = B.w.codeBox, toast = B.w.toast;
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
 var pick = B.pick, ensurePicked = B.ensurePicked;
+var state = B.state;
 var detectStack = B.detectStack, REDACT = B.REDACT, redact = B.redact, pugDom = B.pugDom, NET = B.NET;
 
 /* 扩展桥：取本页 broker pid（MAIN world 拿不到 chrome.*，经 batb:bridge 中转） */
@@ -64,23 +65,11 @@ B.register([
     b.appendChild(note(t('Pug 规则：2 空格缩进，tag.class#id(attr) 文本；只留 id/class/name/type/href/src/placeholder/aria-label/data-test*，丢弃 value 并在复制前脱敏；连续同类兄弟 ≥3 个折叠为 ×N；上限 深度 10 / 4000 节点 / 20 万字符。填入选择器或 bid 可只看该元素及其子孙。',
       'Pug rules: 2-space indent, tag.class#id(attr) text; keep only id/class/name/type/href/src/placeholder/aria-label/data-test*, drop value and redact before copying; runs of ≥3 same-type siblings collapse to ×N; limits: depth 10 / 4000 nodes / 200k chars. Enter a selector or bid to inspect only that element and its descendants.')));
   }},
-{ id:'redact', cat:'llm', grp:'copy', name:'数据脱敏', en:{ name:'Redact Sensitive Data', desc:'Auto-mask phone numbers, IDs, tokens, emails' }, icon:'shield', star:3, desc:'手机号、身份证、token、邮箱自动打码',
-  run:function(b){
-    var text = document.body.innerText.slice(0, 20000);
-    var counts = REDACT.map(function(r){ var m = text.match(r[0]); return { tag:r[1], n:m ? m.length : 0 }; });
-    var safe = redact(text);
-    b.appendChild(kv(counts.map(function(c){ return [c.tag, t(String(c.n) + ' 处', String(c.n) + ' hits')]; })));
-    var pre = el('pre');
-    pre.textContent = safe.split('\n').filter(function(l){ return /PHONE|ID|EMAIL|TOKEN|JWT/.test(l); }).slice(0, 5).join('\n') || t('（正文前 20000 字符内未发现敏感信息）', '(No sensitive data found in the first 20000 chars of body text)');
-    b.appendChild(pre);
-    b.appendChild(el('div', 'row2')).appendChild(btn(t('复制脱敏后正文', 'Copy Redacted Text'), function(){ copyText(safe).then(function(){ toast(t('已复制脱敏文本', 'Redacted text copied')); }); }, 'pri'));
-    b.appendChild(note(t('规则：手机号 / 身份证 / 邮箱 / sk-、ghp-、xoxb- token / JWT。',
-      'Rules: phone number / national ID / email / sk-, ghp-, xoxb- tokens / JWT.')));
-  }},
 { id:'elqa', cat:'llm', grp:'copy', name:'选中元素问答', en:{ name:'Ask About Selected Element', desc:'Bundle element context + your question into a full prompt' }, icon:'chat', star:3, desc:'打包元素上下文 + 你的问题，组成完整 prompt',
   run:function(b){
-    ensurePicked().then(function(e){
+    pick().then(function(e){
       if(!e) return;
+      state.picked = e;
       var ta = el('textarea'); ta.rows = 2; ta.placeholder = t('你的问题，如：这个按钮点击后会发生什么？', 'Your question, e.g. what happens when this button is clicked?');
       b.appendChild(el('div', 'fld')).appendChild(ta);
       b.appendChild(btn(t('组装并复制 Prompt', 'Build & Copy Prompt'), function(){
@@ -94,9 +83,31 @@ t('【问题】', '[Question] ') + (ta.value || t('（未填写）', '(not provi
       }, 'pri'));
     });
   }},
+{ id:'marker', cat:'llm', grp:'copy', name:'复制页桥标记', en:{ name:'Copy Page Bridge Marker', desc:'Copy the page id so the LLM can look the page up' }, icon:'key', star:3, desc:'复制网页 id，LLM 凭 id 查回网页',
+  run:function(b){
+    if(B.ui && B.ui.closePanel) B.ui.closePanel();
+    if(location.protocol === 'file:'){ toast(t('原型页未接入扩展', 'Prototype page not connected to the extension')); return; }
+    pinfo().then(function(info){
+      if(!info || !info.mark){ toast(t('当前页面未接入扩展桥，无法生成标记', 'Page not connected to extension bridge')); return; }
+      copyText(info.mark).then(function(){
+        toast(t('已复制标记 id：' + info.mark, 'Marker id copied: ' + info.mark));
+      });
+      try{
+        console.groupCollapsed('%c [BA] marker ' + t('已复制', 'copied'), 'color:#4fb;font-weight:bold');
+        console.log('mark =', info.mark);
+        console.log('title =', (info.title || document.title));
+        console.log('url =', info.url || location.href);
+        var broker = 'http://127.0.0.1:' + ((info && info.port) || 8766);
+        console.log('GET  ' + broker + '/mark/' + info.mark);
+        console.log('POST ' + broker + '/mark/' + info.mark + '  {"action":"snapshot"}');
+        console.groupEnd();
+      }catch(e){}
+    }).catch(function(e){ toast(t('扩展桥调用失败：' + (e.message || ''), 'Extension bridge failed: ' + (e.message || ''))); });
+  }},
 /* ===== 存储（写入浏览器变量 / localStorage，LLM 自取） ===== */
 { id:'storectx', cat:'llm', grp:'store', name:'存入页面上下文', en:{ name:'Store Page Context', desc:'Write structured context to window / localStorage' }, icon:'package', star:3, desc:'结构化上下文写入 window / localStorage',
   run:function(b){
+    if(B.ui && B.ui.closePanel) B.ui.closePanel();
     var ctx = {
       url: location.href, title: document.title, ts: new Date().toISOString(),
       stack: detectStack(),
@@ -113,76 +124,34 @@ t('【问题】', '[Question] ') + (ta.value || t('（未填写）', '(not provi
     var json = JSON.stringify(ctx);
     window.__BA_CTX__ = ctx;
     try{ localStorage.setItem('ba:ctx', json); }catch(e){}
-    b.appendChild(el('div', 'd', t('已写入 <b>window.__BA_CTX__</b> 与 <b>localStorage["ba:ctx"]</b>，共 <b>' + json.length + '</b> 字符。',
-      'Wrote <b>window.__BA_CTX__</b> and <b>localStorage["ba:ctx"]</b>, <b>' + json.length + '</b> chars total.')));
-    b.appendChild(kv([[t('变量', 'Variable'), badge('window.__BA_CTX__', 'b')], [t('存储键', 'Storage key'), badge('ba:ctx', 'b')], [t('字段', 'Fields'), 'url / title / stack / viewport / forms / table / net / dom']]));
-    b.appendChild(codeBox(
-t('// LLM 经 broker 自取（storage 读 localStorage，跨上下文可靠）\n', '// LLM fetches it via broker (storage reads localStorage, reliable across contexts)\n') +
-'POST /call/{pid}  {"action":"storage","key":"ba:ctx"}\n' +
-t('// window.__BA_CTX__ 仅页面主世界可见（控制台 / MAIN world eval）', '// window.__BA_CTX__ is only visible in the page main world (console / MAIN world eval)')));
-    b.appendChild(note(t('变量随刷新 / 跳转失效；localStorage 可跨刷新保留。写入即生效，LLM 直接 storage 取用。',
-      'The variable is lost on refresh / navigation; localStorage survives refreshes. Written immediately; the LLM reads it directly via storage.')));
+    toast(t('页面上下文已写入（window.__BA_CTX__ + ba:ctx），共 ' + json.length + ' 字符',
+      'Page context written (window.__BA_CTX__ + ba:ctx), ' + json.length + ' chars total'));
+    try{
+      console.groupCollapsed('%c [BA] storectx ' + t('页面上下文已写入', 'page context stored'), 'color:#4fb;font-weight:bold');
+      console.log('window.__BA_CTX__ =', ctx);
+      console.log('localStorage["ba:ctx"] ✓  ' + json.length + ' chars');
+      console.trace();
+      console.groupEnd();
+    }catch(e2){}
   }},
 { id:'storeel', cat:'llm', grp:'store', name:'存入选中元素', en:{ name:'Store Selected Element', desc:'Pick an element → write it to a variable the LLM can read' }, icon:'crosshair', star:2, desc:'拾取元素 → 写入变量，LLM 直接读',
   run:function(b){
-    b.appendChild(el('div', 'note', t('点击按钮进入拾取，选中元素后其定位与上下文写入 window.__BA_EL__。',
-      'Click the button to start picking; the selected element\'s locator and context are written to window.__BA_EL__.')));
-    b.appendChild(btn(t('拾取并存入', 'Pick & Store'), function(){
-      pick().then(function(e){
-        if(!e) return;
-        var sel = bestSelector(e);
-        var obj = { url: location.href, selector: sel, xpath: xpathOf(e), score: scoreSelector(sel).score, html: e.outerHTML.slice(0, 1000), text: (e.textContent || '').trim().slice(0, 300) };
-        window.__BA_EL__ = obj;
-        try{ localStorage.setItem('ba:el', JSON.stringify(obj)); }catch(e2){}
-        toast(t('已写入 window.__BA_EL__', 'Written to window.__BA_EL__'));
-        b.appendChild(el('div', 'd', t('已存入：<b>', 'Stored: <b>') + esc(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')) + '</b> ' + scoreBadge(scoreSelector(sel))));
-        b.appendChild(codeBox('POST /call/{pid}  {"action":"storage","key":"ba:el"}\n' + t('// window.__BA_EL__ 仅页面主世界可见', '// window.__BA_EL__ is only visible in the page main world')));
-      });
-    }, 'pri'));
-  }},
-{ id:'marker', cat:'llm', grp:'store', name:'复制页桥标记', en:{ name:'Copy Page Bridge Marker', desc:'Copy the page id so the LLM can look the page up' }, icon:'key', star:3, desc:'复制网页 id，LLM 凭 id 查回网页',
-  run:function(b){
-    var out = el('div');
-    b.appendChild(el('div', 'note', t('标记 id 在扩展接入本页时由 JS 生成并上报服务器；复制这个 id 交给 LLM，对方即可按 id 查到本页网址与实时快照。',
-      'The marker id is generated by JS when the extension attaches to this page and reported to the server; copy this id to the LLM and it can look up this page\'s URL and live snapshot by id.')));
-    b.appendChild(out);
-    function render(info, err){
-      var broker = 'http://127.0.0.1:' + ((info && info.port) || 8766);
-      var mark = info && info.mark;
-      var title = (info && info.title) || document.title;
-      var url = (info && info.url) || location.href;
-      if(!mark){
-        out.appendChild(kv([[t('页面', 'Page'), esc(title)], ['URL', esc(url)]]));
-        var preErr = err && err.message ? esc(err.message) + t('；', '; ') : '';
-        out.appendChild(note(preErr + t('当前页面未接入扩展桥，无法生成 / 读取标记。', 'This page is not connected to the extension bridge; cannot generate / read the marker.')));
-        return;
-      }
-      out.appendChild(kv([[t('标记 id', 'Marker id'), badge(mark, 'b')], [t('页面', 'Page'), esc(title)], ['URL', esc(url)]]));
-      var row = el('div', 'row2');
-      row.appendChild(btn(t('复制标记 id', 'Copy Marker id'), function(){
-        copyText(mark).then(function(){ toast(t('已复制标记：' + mark, 'Marker copied: ' + mark)); });
-      }, 'pri'));
-      row.appendChild(btn(t('MCP 提示页面', 'MCP Page Handoff'), function(){
-        var prompt =
-t('【页面交接】请用你的 MCP 工具接手这个浏览器页面：\n', '[Page Handoff] Take over this browser page with your MCP tools:\n') +
-t('标记 id：', 'Marker id: ') + mark + '\n' +
-t('标题：', 'Title: ') + String(title).replace(/\s+/g, ' ') + '\n' +
-t('网址：', 'URL: ') + url + '\n' +
-t('优先按标记 id 选中该页面（工具不支持时按网址匹配），先读取一次页面快照确认是同一页面，再执行我接下来的指令。',
-  'Prefer selecting the page by marker id (fall back to URL matching if unsupported); read one page snapshot to confirm it is the same page, then follow my next instruction.');
-        copyText(prompt).then(function(){ toast(t('已复制 MCP 提示', 'MCP handoff prompt copied')); });
-      }));
-      out.appendChild(row);
-      out.appendChild(codeBox(
-t('# 凭标记找回网页（本机 broker 在跑）\n', '# Look up a page by marker (local broker running)\n') +
-'GET  ' + broker + '/mark/' + mark + '\n' +
-'POST ' + broker + '/mark/' + mark + '  {"action":"snapshot"}\n' +
-t('GET  ' + broker + '/marks    # 列出全部标记 → 网址', 'GET  ' + broker + '/marks    # list all markers → URLs')));
-      out.appendChild(note(t('id 随 tab 保存：刷新 / 跳转不变，关闭 tab 后失效；服务器保存 id → 网址映射，离线后仍可查到最近一次的 URL。',
-        'The id is stored per tab: unchanged across refresh / navigation, invalid once the tab closes; the server keeps an id → URL map, so the latest URL is still queryable after going offline.')));
-    }
-    if(location.protocol === 'file:'){ render(null, new Error(t('原型页未接入扩展', 'Prototype page not connected to the extension'))); return; }
-    pinfo().then(function(info){ render(info); }).catch(function(e){ render(null, e); });
+    pick().then(function(e){
+      if(!e) return;
+      state.picked = e;
+      var sel = bestSelector(e);
+      var obj = { url: location.href, selector: sel, xpath: xpathOf(e), score: scoreSelector(sel).score, html: e.outerHTML.slice(0, 1000), text: (e.textContent || '').trim().slice(0, 300) };
+      window.__BA_EL__ = obj;
+      try{ localStorage.setItem('ba:el', JSON.stringify(obj)); }catch(e2){}
+      toast(t('已存入 window.__BA_EL__（' + esc(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')) + '）',
+        'Stored to window.__BA_EL__ (' + e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ')'));
+      try{
+        console.groupCollapsed('%c [BA] storeel ' + t('已存入', 'stored'), 'color:#4fb;font-weight:bold');
+        console.log('window.__BA_EL__ =', obj);
+        console.log('POST /call/{pid}  {"action":"storage","key":"ba:el"}');
+        console.groupEnd();
+      }catch(e3){}
+    });
   }},
 /* ===== 复制 · 高级 ===== */
 { id:'a11y', cat:'llm', grp:'copy', name:'a11y 修复建议', en:{ name:'a11y Fix Suggestions', desc:'Collect accessibility issues as a to-do list for the LLM' }, icon:'person', star:1, desc:'整理可访问性缺陷为待办，可复制给 LLM', adv:true,

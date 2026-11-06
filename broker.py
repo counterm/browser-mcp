@@ -3,7 +3,8 @@
 依赖:  pip install aiohttp          (见 requirements.txt)
 运行:  python broker.py
        BRIDGE_PORT=8766 BRIDGE_TOKEN=xxx python broker.py   # 可选端口与鉴权
-       python broker.py --stdio      # MCP 客户端拉起：broker 与 stdio MCP 同进程启动
+       python broker.py --stdio      # MCP 客户端拉起：broker 与 stdio MCP 同进程启动；
+                                     # 端口已有 broker 时跳过自启，stdio 转发给现有实例
 
 页面接入（Chrome 扩展自动完成）:
   WS  /page                    WebSocket 通道
@@ -40,7 +41,7 @@ import sys
 import time
 import uuid
 
-from aiohttp import web, WSMsgType
+from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 
 TOKEN = os.environ.get("BRIDGE_TOKEN", "")
 PORT = int(os.environ.get("BRIDGE_PORT", "8766"))
@@ -87,7 +88,8 @@ HELP = """Page Bridge Broker
   GET|PUT|DELETE /flow/{name} 读取 / 保存 / 删除 flow
   POST /mcp                   MCP 服务器（Streamable HTTP，无状态）
   GET  /sse                   MCP 服务器（旧版 SSE：GET /sse + POST /messages）
-  --stdio                     MCP 服务器（stdio）：由 MCP 客户端拉起，broker 同进程启动
+  --stdio                     MCP 服务器（stdio）：由 MCP 客户端拉起，broker 同进程启动；
+                              端口已被本 broker 占用时改为转发给现有实例
   WS   /page                  页面接入        WS   /client                外部长连接
 """
 
@@ -969,6 +971,59 @@ async def mcp_stdio_loop():
             _STDOUT.flush()
 
 
+async def broker_alive():
+    """探测端口上是否已有本项目的 broker（GET /pages 通且返回 JSON 数组即认）。"""
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=3)) as sess:
+            async with sess.get(f"http://127.0.0.1:{PORT}/pages",
+                                headers={"X-Bridge-Token": TOKEN} if TOKEN else {}) as resp:
+                if resp.status != 200:
+                    return False
+                return isinstance(await resp.json(content_type=None), list)
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        return False
+
+
+async def mcp_stdio_proxy_loop():
+    """端口已有 broker：跳过自启，把 stdio 的 JSON-RPC 原样转发给现有实例（POST /mcp）。
+
+    每行一条请求、每条回一行响应；通知类（无 id）无回包；stdin 关闭即结束。
+    这样 MCP 客户端不必区分“已有 / 没有 broker”，同一份 stdio 配置通吃，
+    也避免两个实例的页面注册表各管一半。
+    """
+    stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
+    loop = asyncio.get_running_loop()
+    url = f"http://127.0.0.1:{PORT}/mcp"
+    headers = {"X-Bridge-Token": TOKEN} if TOKEN else {}
+    # tools/call 上限 120s、flow 同步 115s，转发超时留足余量；broker 挂掉会立即抛 ClientError
+    timeout = ClientTimeout(total=300)
+    async with ClientSession(timeout=timeout) as sess:
+        while True:
+            line = await loop.run_in_executor(None, stdin.readline)
+            if not line:
+                return
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                body = json.loads(line)
+            except ValueError:
+                out = {"jsonrpc": "2.0", "id": None,
+                       "error": {"code": -32700, "message": "parse error"}}
+            else:
+                mid = body.get("id") if isinstance(body, dict) else None
+                try:
+                    async with sess.post(url, json=body, headers=headers) as resp:
+                        if resp.status == 202:          # 通知类消息：无回包
+                            continue
+                        out = await resp.json(content_type=None)
+                except (ClientError, asyncio.TimeoutError, ValueError) as e:
+                    out = {"jsonrpc": "2.0", "id": mid,
+                           "error": {"code": -32603, "message": f"转发现有 broker 失败：{e}"}}
+            _STDOUT.write(json.dumps(out, ensure_ascii=False) + "\n")
+            _STDOUT.flush()
+
+
 async def run_stdio(app):
     """同进程起 aiohttp 中枢（页面连接用）并跑 stdio JSON-RPC（MCP 客户端用）。"""
     runner = web.AppRunner(app)
@@ -977,9 +1032,15 @@ async def run_stdio(app):
     try:
         await site.start()
     except OSError as e:
-        print(f"[mcp] 监听 127.0.0.1:{PORT} 失败：{e}；同端口只允许一个 broker"
-              f"（已有实例时，MCP 客户端请直接连 http://127.0.0.1:{PORT}/mcp）", file=sys.stderr)
         await runner.cleanup()
+        if await broker_alive():
+            # 已有实例：跳过再起一个（同端口只允许一个 broker），stdio 改为转发给现有实例
+            print(f"[mcp] 127.0.0.1:{PORT} 已有 broker，本进程跳过启动；stdio 转发给现有实例",
+                  file=sys.stderr)
+            await mcp_stdio_proxy_loop()
+            return
+        print(f"[mcp] 监听 127.0.0.1:{PORT} 失败：{e}；端口被其他程序占用且探测不是本 broker"
+              f"（或 BRIDGE_TOKEN 不匹配），可设 BRIDGE_PORT 换端口", file=sys.stderr)
         raise SystemExit(1)
     print(f"[mcp] stdio 就绪；HTTP 中枢 http://127.0.0.1:{PORT}", file=sys.stderr)
     try:

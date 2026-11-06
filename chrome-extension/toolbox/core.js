@@ -35,6 +35,104 @@ B.setLang = function(lang){
 };
 B.toggleLang = function(){ B.setLang(B.lang === 'en' ? 'zh' : 'en'); };
 
+/* ---------- 统一配置（设置面板）：直接复制到剪贴板 / 唤起快捷键等 ---------- */
+B.CFG_KEY = 'ba:tbx-cfg';
+B.cfg = { autoCopy:true, hotkey:'Alt+Shift+D' };
+try{
+  var _cfg = JSON.parse(localStorage.getItem(B.CFG_KEY) || '{}');
+  if(_cfg && typeof _cfg.autoCopy === 'boolean') B.cfg.autoCopy = _cfg.autoCopy;
+  if(_cfg && typeof _cfg.hotkey === 'string' && _cfg.hotkey) B.cfg.hotkey = _cfg.hotkey;
+}catch(e){}
+B.hotkeyParts = function(s){
+  var parts = String(s || 'Alt+Shift+D').split('+').map(function(x){ return x.trim(); }).filter(Boolean);
+  return { alt:parts.indexOf('Alt') > -1, ctrl:parts.indexOf('Ctrl') > -1, shift:parts.indexOf('Shift') > -1,
+    meta:parts.indexOf('Meta') > -1, key:(parts[parts.length - 1] || 'D').toLowerCase() };
+};
+B.hotkeyMatch = function(e, s){
+  var p = B.hotkeyParts(s);
+  return !!p.alt === !!e.altKey && !!p.ctrl === !!e.ctrlKey && !!p.shift === !!e.shiftKey && !!p.meta === !!e.metaKey &&
+    (e.key.length === 1 ? e.key.toLowerCase() : e.key) === p.key;
+};
+/* 扩展级全局配置桥：经 content.js 的 batb:bridge 转 background 的 chrome.storage.local */
+B.extCfg = function(op, patch, timeoutMs){
+  return new Promise(function(resolve, reject){
+    var id = 'cfg' + Date.now() + Math.random().toString(36).slice(2), done = false;
+    var timer = setTimeout(function(){
+      if(done) return; done = true; window.removeEventListener('batb:bridge:res', onRes); reject(new Error('timeout'));
+    }, timeoutMs || 2500);
+    function onRes(ev){
+      var d = ev.detail || {};
+      if(d.id !== id || done) return;
+      done = true; clearTimeout(timer); window.removeEventListener('batb:bridge:res', onRes);
+      d.ok ? resolve(d.data) : reject(new Error(d.error || 'failed'));
+    }
+    window.addEventListener('batb:bridge:res', onRes);
+    window.dispatchEvent(new CustomEvent('batb:bridge', { detail:{ id:id, action:'cfg', params:{ op:op, patch:patch || {} } } }));
+  });
+};
+B.loadExtCfg = function(){
+  return B.extCfg('get', null, 2500).then(function(data){
+    if(!data || typeof data !== 'object') return;
+    if(typeof data.autoCopy === 'boolean') B.cfg.autoCopy = data.autoCopy;
+    if(typeof data.hotkey === 'string' && data.hotkey) B.cfg.hotkey = data.hotkey;
+    try{ localStorage.setItem(B.CFG_KEY, JSON.stringify(B.cfg)); }catch(e){}
+    if(B.ui && B.state && B.state.settings && B.ui.openSettings) B.ui.openSettings();
+  }).catch(function(){});
+};
+B.setCfg = function(k, v){
+  B.cfg[k] = v;
+  try{ localStorage.setItem(B.CFG_KEY, JSON.stringify(B.cfg)); }catch(e){}
+  var patch = {}; patch[k] = v;
+  B.extCfg('set', patch, 3000).catch(function(){});
+};
+/* 其他标签页改了全局配置：background 广播 → content.js → 这里实时生效 */
+window.addEventListener('batb:cfg', function(ev){
+  var d = ev.detail || {};
+  if(typeof d.autoCopy === 'boolean') B.cfg.autoCopy = d.autoCopy;
+  if(typeof d.hotkey === 'string' && d.hotkey) B.cfg.hotkey = d.hotkey;
+  try{ localStorage.setItem(B.CFG_KEY, JSON.stringify(B.cfg)); }catch(e){}
+  if(B.ui && B.state && B.state.settings && B.ui.openSettings) B.ui.openSettings();
+});
+
+/* ---------- 操作记录：所有工具结果统一落 localStorage（约 100KB，超出丢弃最早） ---------- */
+B.REC_KEY = 'ba:tbx-records';
+B.rec = (function(){
+  var MAX_CHARS = 100 * 1024, MAX_ITEMS = 200;
+  function load(){ try{ var a = JSON.parse(localStorage.getItem(B.REC_KEY) || '[]'); return Array.isArray(a) ? a : []; }catch(e){ return []; } }
+  function save(arr){
+    while(arr.length > MAX_ITEMS) arr.shift();
+    var s = JSON.stringify(arr);
+    while(s.length > MAX_CHARS && arr.length > 1){ arr.shift(); s = JSON.stringify(arr); }
+    if(s.length > MAX_CHARS && arr.length) arr[0].text = String(arr[0].text || '').slice(0, MAX_CHARS - 1024);
+    try{ localStorage.setItem(B.REC_KEY, JSON.stringify(arr)); }catch(e){}
+  }
+  function add(title, text, feat){
+    text = String(text == null ? '' : text);
+    if(!text.trim()) return;
+    var arr = load(), last = arr[arr.length - 1];
+    /* 同一次操作先记录渲染结果、随后复制精确文本：15 秒内并成一条，避免重复条目 */
+    if(last && last.feat === (feat || '') && Date.now() - last.ts < 15000){
+      last.ts = Date.now(); last.title = title || last.title; last.text = text;
+    } else {
+      arr.push({ ts:Date.now(), feat:feat || '', title:title || '', text:text });
+    }
+    save(arr);
+  }
+  return { load:load, add:add, used:function(){ try{ return (localStorage.getItem(B.REC_KEY) || '').length * 2; }catch(e){ return 0; } },
+    clear:function(){ try{ localStorage.removeItem(B.REC_KEY); }catch(e){} } };
+})();
+/* 复制入口统一收口：无论是否真正写入剪贴板，都先记录一条操作结果 */
+var _copyText = B.u.copyText;
+B.u.copyText = function(text, meta){
+  meta = meta || {};
+  if(!meta.noLog){
+    var f = B.state && B.state.feat;
+    B.rec.add(meta.title || (f ? B.t(f.name, f.en && f.en.name) : B.t('复制结果', 'Copied result')),
+      String(text), f ? f.id : 'copy');
+  }
+  return _copyText.call(B.u, text);
+};
+
 /* ---------- 图标 ---------- */
 B.ICONS = {
   toolbox:'<rect x="4" y="8" width="16" height="12" rx="2"/><path d="M9 8V6a3 3 0 016 0v2M9.5 13.5h5"/>',
@@ -169,7 +267,7 @@ var WCSS = `
 .cat b{font-size:12.5px;color:#f1f5f9;font-weight:600}
 .cat i{font-style:normal;font-size:10px;color:#64748b;background:rgba(255,255,255,.07);border-radius:99px;padding:1px 6px;margin-left:auto}
 .cat.act i{color:var(--c)}
-.pf{display:flex;align-items:center;gap:6px;margin-top:11px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:10.5px;color:#64748b}
+.pf{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:11px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:10.5px;color:#64748b}
 kbd{font:10px ui-monospace,monospace;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:1px 4px;color:#cbd5e1}
 .pf .link{border:none;background:none;color:#818cf8;font-size:10.5px;cursor:pointer;padding:0}
 .pf .lang{margin-left:auto}
@@ -189,6 +287,8 @@ kbd{font:10px ui-monospace,monospace;background:rgba(255,255,255,.09);border:1px
 .body{overflow-y:auto;overscroll-behavior:contain;padding:8px}
 .body::-webkit-scrollbar{width:8px}
 .body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:8px}
+/* 三级详情浮层（dpop）内部间距加大，避免内容拥挤 */
+.dpop .body{padding:14px}
 /* 功能行 */
 .feat{display:flex;align-items:center;gap:9px;width:100%;padding:8px 9px;border:none;background:none;border-radius:10px;cursor:pointer;text-align:left;color:#cbd5e1}
 .feat:hover{background:rgba(255,255,255,.07)}
@@ -208,11 +308,11 @@ kbd{font:10px ui-monospace,monospace;background:rgba(255,255,255,.09);border:1px
 .grp-h{font-size:10px;font-weight:600;color:#8296b3;padding:8px 9px 2px;letter-spacing:.3px}
 .grp-h:first-child{padding-top:2px}
 /* 三级详情浮层（与二级 Popover 错开，不占位列表）；.d 也用于关于页文案 */
-.pop .d{font-size:11.5px;color:#94a3b8;line-height:1.65;margin-bottom:10px}
+.pop .d{font-size:11.5px;color:#94a3b8;line-height:1.65;margin-bottom:12px}
 .pop .d b{color:#cbd5e1}
 /* 结果组件 */
-pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 10px;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#a5f3fc;overflow:auto;max-height:210px;white-space:pre;tab-size:2}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px}
+pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 13px;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#a5f3fc;overflow:auto;max-height:260px;white-space:pre;tab-size:2}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:11.5px}
 .kv dt{color:#64748b;white-space:nowrap}
 .kv dd{color:#cbd5e1;word-break:break-all;margin:0}
 .bdg{display:inline-block;font-size:10px;border-radius:99px;padding:1px 8px;font-weight:600}
@@ -221,15 +321,15 @@ pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-ra
 .bdg.r{background:rgba(239,68,68,.16);color:#f87171}
 .bdg.b{background:rgba(99,102,241,.18);color:#a5b4fc}
 .bdg.mock{background:rgba(148,163,184,.14);color:#94a3b8}
-.btn2{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e5e7eb;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer;transition:background .15s}
+.btn2{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e5e7eb;border-radius:8px;padding:6px 14px;font-size:11.5px;cursor:pointer;transition:background .15s}
 .btn2:hover{background:rgba(255,255,255,.12)}
 .btn2.pri{background:#4f46e5;border-color:#4f46e5;color:#fff}
 .btn2.pri:hover{background:#6366f1}
 .btn2.warn{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.35);color:#fca5a5}
-.row2{display:flex;gap:7px;flex-wrap:wrap;margin:8px 0}
-.note{font-size:10.5px;color:#64748b;line-height:1.6;background:rgba(255,255,255,.03);border-left:2px solid #475569;border-radius:0 8px 8px 0;padding:7px 10px;margin-top:8px}
-.lst{max-height:220px;overflow:auto;margin-top:6px}
-.li{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;font-size:11.5px;color:#cbd5e1}
+.row2{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.note{font-size:10.5px;color:#64748b;line-height:1.6;background:rgba(255,255,255,.03);border-left:2px solid #475569;border-radius:0 8px 8px 0;padding:9px 12px;margin-top:10px}
+.lst{max-height:240px;overflow:auto;margin-top:8px}
+.li{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;font-size:11.5px;color:#cbd5e1}
 .li:hover{background:rgba(255,255,255,.06)}
 .li .m{font:10px ui-monospace,monospace;color:#a5b4fc;background:rgba(99,102,241,.14);border-radius:5px;padding:1px 6px;flex:none}
 .li .u{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;font-size:10.5px}
@@ -243,14 +343,43 @@ pre{background:rgba(2,6,23,.55);border:1px solid rgba(255,255,255,.08);border-ra
 .tg.h{background:rgba(148,163,184,.07);color:#64748b}
 .tgline .tg{margin:0 3px 2px 0}
 .sep{flex:none;color:#64748b;font:9.5px ui-monospace,monospace;line-height:1.6}
-.fld{display:flex;gap:6px;margin:6px 0}
-.fld input{flex:1;background:rgba(2,6,23,.5);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:5px 9px;color:#e5e7eb;font-size:11.5px;outline:none}
+.fld{display:flex;gap:8px;margin:8px 0}
+.fld input{flex:1;background:rgba(2,6,23,.5);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 11px;color:#e5e7eb;font-size:11.5px;outline:none}
 .fld input:focus{border-color:#6366f1}
-.fld textarea{width:100%;background:rgba(2,6,23,.5);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 9px;color:#e5e7eb;font-size:11px;outline:none;resize:vertical}
-.tabs{display:flex;gap:4px;margin-bottom:6px}
-.tabs button{border:1px solid rgba(255,255,255,.1);background:none;color:#64748b;font-size:10.5px;border-radius:7px;padding:3px 9px;cursor:pointer}
+.fld textarea{width:100%;background:rgba(2,6,23,.5);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:7px 11px;color:#e5e7eb;font-size:11px;outline:none;resize:vertical}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button{border:1px solid rgba(255,255,255,.1);background:none;color:#64748b;font-size:10.5px;border-radius:8px;padding:5px 13px;cursor:pointer}
 .tabs button.on{color:#a5b4fc;border-color:rgba(99,102,241,.5);background:rgba(99,102,241,.1)}
 .mock-tag{font-size:9.5px;color:#fbbf24;background:rgba(245,158,11,.12);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:1px}
+/* 设置面板 */
+.set-row{display:flex;align-items:center;gap:8px;padding:8px 9px;border-bottom:1px solid rgba(255,255,255,.06);font-size:11.5px;color:#cbd5e1}
+.set-row .sl{flex:1;min-width:0}
+.set-row .sl b{display:block;font-size:12px;color:#e5e7eb;font-weight:600}
+.set-row .sl s{text-decoration:none;font-size:10.5px;color:#64748b}
+.seg{display:flex;gap:3px;flex:none}
+.seg button{border:1px solid rgba(255,255,255,.12);background:none;color:#94a3b8;font-size:10.5px;border-radius:7px;padding:3px 9px;cursor:pointer}
+.seg button.on{color:#a5b4fc;border-color:rgba(99,102,241,.5);background:rgba(99,102,241,.12)}
+.sw{position:relative;width:38px;height:20px;border-radius:99px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.08);cursor:pointer;flex:none;transition:background .15s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#94a3b8;transition:transform .15s,background .15s}
+.sw.on{background:rgba(79,70,229,.5);border-color:rgba(99,102,241,.6)}
+.sw.on::after{transform:translateX(18px);background:#c7d2fe}
+.set-row.hk{border-bottom:none;padding-bottom:3px}
+.hk-edit{display:flex;align-items:center;flex-wrap:wrap;gap:5px;padding:0 9px 9px;border-bottom:1px solid rgba(255,255,255,.06)}
+.hk-cb{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:7px;border:1px solid rgba(255,255,255,.18);color:#94a3b8;font-size:10.5px;cursor:pointer;user-select:none;transition:border-color .15s,background .15s,color .15s}
+.hk-cb input{display:none}
+.hk-cb::before{content:"";flex:none;width:10px;height:10px;border-radius:3px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.04);box-sizing:border-box}
+.hk-cb.on{border-color:#818cf8;color:#e0e7ff;background:rgba(99,102,241,.25)}
+.hk-cb.on::before{content:"✓";text-align:center;line-height:10px;font-size:9px;font-weight:700;border-color:#818cf8;background:#4f46e5;color:#fff}
+.hk-key{width:34px;height:22px;text-align:center;font-size:12px;font-weight:600;color:#e5e7eb;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:7px;outline:none;font-family:ui-monospace,monospace}
+.hk-key:focus{border-color:rgba(99,102,241,.6)}
+.rec-list{margin-top:6px}
+.rec-item{padding:7px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.03);margin-bottom:6px}
+.rec-item .rh{display:flex;align-items:center;gap:6px}
+.rec-item .rh b{font-size:11px;color:#e5e7eb;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec-item .rh time{font-size:10px;color:#64748b;flex:none}
+.rec-item p{font-size:10.5px;color:#94a3b8;line-height:1.5;margin:4px 0 0;font-family:ui-monospace,monospace;max-height:3em;overflow:hidden;white-space:pre-wrap;word-break:break-all}
+.rec-item button{border:none;background:rgba(255,255,255,.08);color:#cbd5e1;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;flex:none}
+.rec-item button:hover{background:rgba(255,255,255,.16)}
 /* 撤销栈 / toast / 引导 */
 .pill-u{position:fixed;display:none;align-items:center;gap:8px;background:rgba(15,23,42,.94);border:1px solid rgba(255,255,255,.12);border-radius:99px;padding:6px 8px 6px 13px;font-size:11px;color:#cbd5e1;box-shadow:0 10px 26px rgba(2,6,23,.4);z-index:25;pointer-events:auto}
 .pill-u.show{display:flex}

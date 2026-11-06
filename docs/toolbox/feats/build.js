@@ -7,9 +7,32 @@ var ensurePicked = B.ensurePicked, t = B.t;
 
 /* ---------- flow 录制引擎（模块级：面板关开不影响录制；扩展版跨页由 background 续存，见 docs/spec-flow.md） ---------- */
 var REC = { on:false, paused:false, name:'', desc:'', vars:{}, steps:[], url:location.href };
-var recBound = false, recListEl = null, recStatusEl = null, recPrevEl = null, recRender = null;
+var recBound = false;
 var hasExt = false;
-try { hasExt = !!(window.chrome && chrome.runtime && chrome.runtime.id); } catch(e){}
+/* 工具箱注入在页面主世界（MAIN world），拿不到 chrome.runtime，同步探测必为 false——
+   这曾让「运行 flow」磁贴在扩展版里永远当原型处理。改为经 DOM 事件桥异步探测：
+   batb:bridge → content.js → background（tb:pinfo 轻量调用），有响应（含错误响应）
+   即视为扩展桥在；超时（真原型 / content.js 缺失）判 false。 */
+function probeExt(){
+  return new Promise(function(res){
+    var done = false;
+    function settle(v){ if(!done){ done = true; res(v); } }
+    try {
+      var id = Math.random().toString(36).slice(2);
+      var timer = setTimeout(function(){ cleanup(); settle(false); }, 1200);
+      function onRes(ev){
+        var d = ev.detail;
+        if(!d || d.id !== id) return;
+        cleanup();
+        settle(true); /* ok:false 也算桥在（token 401 / 扩展刚重载等，具体报错由调用处给） */
+      }
+      function cleanup(){ clearTimeout(timer); window.removeEventListener('batb:bridge:res', onRes); }
+      window.addEventListener('batb:bridge:res', onRes);
+      window.dispatchEvent(new CustomEvent('batb:bridge', { detail:{ id:id, action:'pinfo', params:{} } }));
+    } catch(e){ settle(false); }
+  });
+}
+var extReady = probeExt().then(function(ok){ hasExt = ok; return ok; });
 
 function flowBridge(action, params, timeoutMs){
   return new Promise(function(resolve, reject){
@@ -49,14 +72,25 @@ function recAdd(st){
   for(var k in st) full[k] = st[k];
   REC.steps.push(full);
   recSync();
-  recPaint();
+}
+/* 点击目标的页面绝对坐标（渲染坐标 + 滚动偏移）。回放时同一选择器可能命中多个同构节点
+   （列表里每行一个「详情」按钮、隐藏抽屉与弹窗共用 aria-label），执行侧按「可见候选里
+   离该坐标最近」选取。录制时页面可能已滚动，必须带上 scrollX / scrollY 才可跨滚动比对。 */
+function recPos(el){
+  var r = el.getBoundingClientRect();
+  return {
+    x: Math.round(r.left + r.width / 2 + (window.scrollX || 0)),
+    y: Math.round(r.top + r.height / 2 + (window.scrollY || 0)),
+  };
 }
 function recOnClick(e){
   var x = recTarget(e); if(!x) return;
   var tgt = x.closest('a,button,summary,[onclick],[role="button"],[role="tab"],[role="menuitem"]');
   if(!tgt || /^label$|^option$|^input$|^textarea$|^select$/i.test(tgt.tagName)) return;
   // input/textarea/select 的点击是聚焦噪音，由 change 统一记录；label/option 由其目标元素记录
-  recAdd({ do:'click', selector:B.sel.bestSelector(tgt), text:(tgt.innerText || '').trim().slice(0, 40) });
+  var pos = recPos(tgt);
+  recAdd({ do:'click', selector:B.sel.bestSelector(tgt), text:(tgt.innerText || '').trim().slice(0, 40),
+    x:pos.x, y:pos.y });
 }
 function recOnChange(e){
   var x = recTarget(e); if(!x) return;
@@ -108,7 +142,9 @@ function stepsYaml(doc){
       if(k === 'id') return;
       var v = s[k];
       if(v === undefined || v === null || v === '') return;
-      L.push('    ' + k + ': ' + ((v === true || v === false) ? v : JSON.stringify(String(v))));
+      L.push('    ' + k + ': ' + ((v === true || v === false) ? v
+        : (k === 'x' || k === 'y') && isFinite(Number(v)) ? String(Number(v))
+        : JSON.stringify(String(v))));
     });
   });
   return L.join('\n') + '\n';
@@ -178,7 +214,7 @@ function paintFlowLib(lib, out, refresh){
   lib.appendChild(note(t('读取中…', 'Loading…')));
   flowBridge('flow', { op:'list' }, 15000).then(function(items){
     lib.innerHTML = '';
-    if(!items || !items.length){ lib.appendChild(note(t('库为空。先在「操作录制 → flow」里保存入库、导入，或直接粘贴运行。', 'Library is empty. Save a recording, import YAML, or paste-and-run in "Record → Flow".'))); return; }
+    if(!items || !items.length){ lib.appendChild(note(t('库为空。先在「录制 flow」里录制后粘贴保存，或直接粘贴运行。', 'Library is empty. Record a flow, paste it to save, or paste-and-run directly.'))); return; }
     items.forEach(function(f){
       var row = el('div');
       row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
@@ -205,54 +241,13 @@ function paintFlowLib(lib, out, refresh){
     lib.appendChild(note(t('库读取失败（扩展更新后需刷新页面）：', 'Library read failed (refresh the page after an extension update): ') + String(e3.message || e3)));
   });
 }
-function recPaint(){
-  if(recStatusEl && recStatusEl.isConnected){
-    recStatusEl.innerHTML = REC.on
-      ? '<span style="color:#dc2626">●</span> ' + (REC.paused ? t('已暂停 · ', 'Paused · ') : t('录制中 · ', 'Recording · ')) + REC.steps.length + t(' 步（跨页面自动续录）', ' steps (auto-resumes across pages)')
-      : t('未在录制', 'Not recording') + (REC.steps.length ? ' · ' + REC.steps.length + t(' 步待导出', ' steps pending export') : '');
-  }
-  if(recListEl && recListEl.isConnected){
-    recListEl.innerHTML = '';
-    if(!REC.steps.length){
-      recListEl.appendChild(note(t('还没有步骤。点「开始录制」后正常操作页面即可。', 'No steps yet. Click "Start recording" and just use the page normally.')));
-    } else {
-      REC.steps.forEach(function(s){
-        var val = s.text !== undefined ? s.text : (s.value !== undefined ? s.value : '');
-        var disp = s.do + '  ' + (s.selector || s.url || s.key || '') +
-          (val !== '' && val != null ? '  = ' + String(val).slice(0, 24) : '') + (s.secret ? '  (*** )' : '');
-        var row = el('div', null, '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-          esc(s.id + '  ' + disp) + '</span>');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0';
-        var isVar = !s.secret && /^\$\{/.test(String(s.text !== undefined ? s.text : (s.value !== undefined ? s.value : '')));
-        if(!s.secret && !isVar && (s.text !== undefined || s.value !== undefined)){
-          row.appendChild(btn(t('⇄变量', '⇄Var'), function(){
-            var k2 = s.text !== undefined ? 'text' : 'value';
-            var vn = 'v' + (Object.keys(REC.vars).length + 1);
-            REC.vars[vn] = s[k2];
-            s[k2] = '${vars.' + vn + '}';
-            recSync(); recPaint();
-          }));
-        }
-        row.appendChild(btn('×', function(){
-          var i2 = REC.steps.indexOf(s);
-          if(i2 > -1) REC.steps.splice(i2, 1);
-          recSync(); recPaint();
-        }));
-        recListEl.appendChild(row);
-      });
-    }
-  }
-  if(recPrevEl && recPrevEl.isConnected){
-    var pre = recPrevEl.querySelector('pre');
-    if(pre) pre.textContent = stepsYaml(recDoc());
-  }
-}
 function recStart(){
   REC.on = true; REC.paused = false; REC.url = location.href;
   if(!REC.steps.length) REC.steps.push({ id: recNextId(), do:'nav', url:location.href }); // 起始页固定为第一步
-  recBind(true); recSync(); recPaint();
+  recBind(true); recSync();
   /* 录制期间收起三层弹窗，FAB 换成「暂停 / 停止」HUD */
   if(B.ui && B.ui.beginRecord) B.ui.beginRecord({ paused:false, onPause:recTogglePause, onStop:recStop });
+  toast(t('开始录制：在页面上正常操作，点右下角 ■ 停止并导出 YAML', 'Recording: use the page normally; click ■ at the bottom-right to stop and export YAML'));
 }
 function recTogglePause(){
   if(!REC.on) return;
@@ -260,42 +255,41 @@ function recTogglePause(){
   /* 暂停期间换页：恢复时补一条 nav，保证 flow 仍然连贯 */
   if(!REC.paused && REC.url !== location.href) REC.steps.push({ id: recNextId(), do:'nav', url:location.href });
   REC.url = location.href;
-  recBind(!REC.paused); recSync(); recPaint();
+  recBind(!REC.paused); recSync();
   if(B.ui && B.ui.setRecordPaused) B.ui.setRecordPaused(REC.paused);
 }
-/* 停止：结果自动进剪贴板，再恢复之前的三层弹窗（详情内容同步重绘） */
+/* 停止：结果先记录到本地操作记录，再按设置决定是否直接写剪贴板；最后恢复三层弹窗 */
 function recStop(){
   if(!REC.on) return;
   REC.on = false; REC.paused = false;
-  recBind(false); recSync(); recPaint();
+  recBind(false); recSync();
   var yaml = stepsYaml(recDoc());
+  var title = t('录制 flow', 'Record Flow');
+  if(B.rec) B.rec.add(title, yaml, 'record');
   function done(copied){
-    if(recRender && recStatusEl && recStatusEl.isConnected) recRender();
     if(B.ui && B.ui.endRecord) B.ui.endRecord();
     toast(copied
-      ? t('录制已停止，YAML 已复制到剪贴板', 'Recording stopped — YAML copied to the clipboard')
-      : t('录制已停止；自动复制失败，请在面板中点「复制 YAML」', 'Recording stopped; auto-copy failed — use "Copy YAML" in the panel'));
+      ? t('录制已停止，YAML 已复制到剪贴板（也记录在「设置」中）', 'Recording stopped — YAML copied to the clipboard (also saved under Settings)')
+      : t('录制已停止，YAML 已记录在「设置 → 操作记录」中，可手动复制', 'Recording stopped — YAML saved under Settings → Records for manual copy'));
   }
-  try{ copyText(yaml).then(function(){ done(true); }, function(){ done(false); }); }
-  catch(e){ done(false); }
-}
-function recReset(){
-  REC.on = false; REC.paused = false; recBind(false);
-  if(B.ui && B.ui.endRecord) B.ui.endRecord();
-  REC.name = ''; REC.desc = ''; REC.vars = {}; REC.steps = []; REC.url = location.href;
-  if(hasExt) flowBridge('flowrec', { op:'clear' }, 8000).catch(function(){});
-  recPaint();
+  if(B.cfg && B.cfg.autoCopy){
+    try{ copyText(yaml, { noLog:true }).then(function(){ done(true); }, function(){ done(false); }); }
+    catch(e){ done(false); }
+  } else done(false);
 }
 /* 跨页续录：工具箱每次注入问一次 background；换页且未暂停时由 background 自动补一条 nav 步骤 */
-if(hasExt) flowBridge('flowrec', { op:'get', url:location.href }, 8000).then(function(st){
-  if(st && st.on){
-    REC.on = true; REC.paused = !!st.paused; REC.name = st.name || ''; REC.desc = st.desc || '';
-    REC.vars = st.vars || {}; REC.steps = st.steps || []; REC.url = st.url || location.href;
-    recBind(!REC.paused);
-    if(B.ui && B.ui.beginRecord) B.ui.beginRecord({ paused:REC.paused, onPause:recTogglePause, onStop:recStop });
-    setTimeout(function(){ B.w.toast(t('流程录制已恢复（' + REC.steps.length + ' 步）', 'Flow recording resumed (' + REC.steps.length + ' steps)')); }, 600);
-  }
-}).catch(function(){});
+extReady.then(function(ok){
+  if(!ok) return;
+  flowBridge('flowrec', { op:'get', url:location.href }, 8000).then(function(st){
+    if(st && st.on){
+      REC.on = true; REC.paused = !!st.paused; REC.name = st.name || ''; REC.desc = st.desc || '';
+      REC.vars = st.vars || {}; REC.steps = st.steps || []; REC.url = st.url || location.href;
+      recBind(!REC.paused);
+      if(B.ui && B.ui.beginRecord) B.ui.beginRecord({ paused:REC.paused, onPause:recTogglePause, onStop:recStop });
+      setTimeout(function(){ B.w.toast(t('流程录制已恢复（' + REC.steps.length + ' 步）', 'Flow recording resumed (' + REC.steps.length + ' steps)')); }, 600);
+    }
+  }).catch(function(){});
+});
 
 B.register([
 { id:'pwcode', cat:'build', name:'生成 Playwright 代码', icon:'filecode', star:3, desc:'直接产出可运行定位 / 操作片段',
@@ -379,109 +373,10 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
         'The selector is derived automatically from the page table; on a real site, replace it with the Element Picker result.')));
     }
   }},
-{ id:'record', cat:'build', name:'操作录制 → flow', icon:'clock', star:3, desc:'录制页面操作生成 YAML 测试流；导入 / 库管理 / 一键运行', adv:true,
-  en:{ name:'Record → Flow', desc:'Record page actions into YAML test flows; import / library / one-click run' },
-  run:function(b){
-    function render(){
-      b.innerHTML = '';
-      if(!hasExt) b.appendChild(note(t('当前为原型环境（无扩展桥）：录制与复制 / 下载可用；保存入库、库管理与运行需扩展版。', 'Prototype environment (no extension bridge): recording and copy/download work; library save / management / run need the extension build.')));
-
-      /* ---- 录制控制 ---- */
-      var ctl = el('div');
-      ctl.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px';
-      var nameIn = el('input');
-      nameIn.value = REC.name; nameIn.placeholder = t('flow 名（留空自动生成）', 'flow name (auto if empty)');
-      nameIn.style.cssText = 'flex:1 1 130px;min-width:120px;padding:3px 6px;font-size:11px';
-      nameIn.onchange = function(){ REC.name = nameIn.value.trim(); recSync(); recPaint(); };
-      var descIn = el('input');
-      descIn.value = REC.desc; descIn.placeholder = t('描述（可选）', 'description (optional)');
-      descIn.style.cssText = 'flex:1 1 130px;min-width:120px;padding:3px 6px;font-size:11px';
-      descIn.onchange = function(){ REC.desc = descIn.value.trim(); recSync(); recPaint(); };
-      ctl.appendChild(nameIn); ctl.appendChild(descIn);
-      b.appendChild(ctl);
-
-      var status = el('div', 'd');
-      recStatusEl = status; recPaint();
-      b.appendChild(status);
-
-      var acts = el('div');
-      acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px';
-      acts.appendChild(btn(REC.on ? t('停止录制', 'Stop recording') : t('开始录制', 'Start recording'), function(){
-        if(REC.on) recStop(); else recStart();
-        render();
-      }));
-      if(REC.steps.length){
-        acts.appendChild(btn(t('复制 YAML', 'Copy YAML'), function(){
-          copyText(stepsYaml(recDoc())).then(function(){ toast(t('已复制到剪贴板', 'Copied to clipboard')); });
-        }));
-        acts.appendChild(btn(t('下载 .yaml', 'Download .yaml'), function(){
-          var doc = recDoc();
-          var blob = new Blob([stepsYaml(doc)], { type:'text/yaml' });
-          var u = URL.createObjectURL(blob);
-          var a2 = document.createElement('a');
-          a2.href = u; a2.download = doc.flow + '.yaml'; a2.click();
-          setTimeout(function(){ URL.revokeObjectURL(u); }, 3000);
-        }));
-        if(hasExt) acts.appendChild(btn(t('保存入库', 'Save to library'), function(){
-          var doc = recDoc();
-          flowBridge('flow', { op:'save', name:doc.flow, yaml:stepsYaml(doc) }, 30000).then(function(r){
-            toast(t('已保存：', 'Saved: ') + ((r && r.name) || ''));
-            render();
-          }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
-        }));
-        acts.appendChild(btn(t('清空', 'Clear'), function(){ recReset(); render(); }));
-      }
-      b.appendChild(acts);
-
-      /* ---- 步骤列表 ---- */
-      b.appendChild(el('div', 'grp-h', t('步骤', 'Steps')));
-      var list = el('div');
-      recListEl = list; recPaint();
-      b.appendChild(list);
-      b.appendChild(note(t('输入在失焦(change)时记录；下拉记 value；勾选框记点击；密码记为 ${env.PWD}（运行时注入）；点击链接跳转后自动补 nav 步骤并续录；「⇄变量」把录制值转为运行时变量。', 'Inputs are captured on change (blur); selects record value; checkboxes as clicks; passwords become ${env.PWD} (injected at runtime); link navigation appends a nav step and resumes; "⇄Var" turns a recorded value into a runtime variable.')));
-
-      /* ---- YAML 预览 ---- */
-      if(REC.steps.length){
-        b.appendChild(el('div', 'grp-h', t('YAML 预览', 'YAML preview')));
-        recPrevEl = codeBox(stepsYaml(recDoc()), 170);
-        b.appendChild(recPrevEl);
-      }
-
-      /* ---- 导入 ---- */
-      b.appendChild(el('div', 'grp-h', t('导入', 'Import')));
-      var ta = el('textarea');
-      ta.placeholder = t('粘贴 flow YAML（导出的或手写的）后点「导入保存」；保存前扩展会做 schema 校验。', 'Paste flow YAML (exported or hand-written) then "Import & save"; the extension validates the schema before saving.');
-      ta.style.cssText = 'width:100%;min-height:64px;padding:5px;font-size:11px;font-family:monospace;margin-bottom:6px';
-      b.appendChild(ta);
-      var runOut = el('div');
-      if(hasExt) b.appendChild(btn(t('导入保存', 'Import & save'), function(){
-        var y3 = ta.value.trim();
-        if(!y3){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
-        flowBridge('flow', { op:'save', yaml:y3 }, 30000).then(function(r){
-          toast(t('已保存：', 'Saved: ') + ((r && r.name) || ''));
-          render();
-        }).catch(function(e3){ toast(t('保存失败：', 'Save failed: ') + e3.message); });
-      }));
-      if(hasExt) b.appendChild(btn(t('直接运行（不保存）', 'Run without saving'), function(){
-        var y4 = ta.value.trim();
-        if(!y4){ toast(t('先粘贴 YAML', 'Paste YAML first')); return; }
-        runFlowReq({ yaml:y4 }, runOut);
-      }));
-      else b.appendChild(note(t('导入需要扩展版。', 'Import needs the extension build.')));
-      if(hasExt) b.appendChild(runOut);
-
-      /* ---- flow 库 ---- */
-      if(hasExt){
-        b.appendChild(el('div', 'grp-h', t('flow 库（浏览器本地）', 'Flow library (browser-local)')));
-        var lib = el('div');
-        b.appendChild(lib);
-        var out = el('div');
-        b.appendChild(out);
-        paintFlowLib(lib, out, render);
-      }
-    }
-    recRender = render;
-    render();
+{ id:'record', cat:'build', name:'录制 flow', icon:'clock', star:3, desc:'点击直接开始录制，停止后复制 YAML 并记入操作记录', adv:true, direct:true,
+  en:{ name:'Record Flow', desc:'Click to start recording; YAML is copied and saved to records when you stop' },
+  run:function(){
+    if(REC.on) recStop(); else recStart();
   }},
 { id:'runflow', cat:'build', name:'运行 flow', icon:'play', star:2, desc:'粘贴 YAML 或从库选 flow，在当前页执行，实时进度与逐步报告',
   en:{ name:'Run Flow', desc:'Paste YAML or pick a library flow, run it on the current page with live progress and per-step reports' },
@@ -520,7 +415,9 @@ t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with 
       b.appendChild(lib);
       paintFlowLib(lib, out, render);
     }
-    render();
+    /* 同上：等桥探测结果再渲染，避免扩展版被误判为原型 */
+    b.appendChild(note(t('正在探测扩展桥…', 'Probing extension bridge…')));
+    extReady.then(function(){ render(); });
   }},
 { id:'formkit', cat:'build', name:'表单保存与填充', icon:'save', star:3, desc:'按站点保存/回填表单值；随机假数据一键填充',
   en:{ name:'Save & Fill Forms', desc:'Save / restore form values per site; one-click random mock data' },

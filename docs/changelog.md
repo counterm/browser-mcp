@@ -5,6 +5,17 @@
 
 按日期倒序，每条独立存放于 `changelog/`：
 
+- [2026-11-05 · fix: text 兜底把「新增」当成「新增用户」，仍会点到旧页面同构按钮](./changelog/2026-11-05-fix： text 兜底把「新增」当成「新增用户」，仍会点到旧页面同构按钮.md)
+- [2026-11-05 · feat: flow 自检 / 自报 / 自记录集中到 diag.js](./changelog/2026-11-05-feat： flow 自检自报自记录集中到 diag.js.md)
+- [2026-11-04 · fix: 选择器命中旧页面同构按钮导致弹错弹窗](./changelog/2026-11-04-fix： 选择器命中旧页面同构按钮导致弹错弹窗.md)
+- [2026-11-04 · fix: 快捷键改为复选框 + 单字符输入，避免被其它扩展捷取](./changelog/2026-11-04-fix： 快捷键改为复选框+单字符输入，避免被其它扩展捷取.md)
+- [2026-11-04 · feat: 设置入口前置，唤起快捷键移入设置并支持全局更换](./changelog/2026-11-04-feat： 设置入口前置，唤起快捷键移入设置并支持全局更换.md)
+- [2026-11-04 · feat: 工具箱设置面板与操作记录，录制 flow 改为点击即录](./changelog/2026-11-04-feat： 工具箱设置面板与操作记录，录制 flow 改为点击即录.md)
+- [2026-11-04 · feat: flow 点击步记录页面绝对坐标，同构节点按最近坐标选取](./changelog/2026-11-04-feat： flow 点击步记录页面绝对坐标，同构节点按最近坐标选取.md)
+- [2026-11-04 · fix: 选择器命中隐藏同名节点导致点击静默无效](./changelog/2026-11-04-fix： 选择器命中隐藏同名节点导致点击静默无效.md)
+- [2026-11-02 · feat: flow 定位类动作 auto-wait——元素未出现窗口内轮询，录制 flow 回放不再跑赢异步渲染](./changelog/2026-11-02-feat： flow 定位类动作 auto-wait——元素未出现窗口内轮询，录制 flow 回放不再跑赢异步渲染.md)
+- [2026-11-02 · fix: flow 录制选择器命中框架自动 id 导致 type 报 Illegal invocation](./changelog/2026-11-02-fix： flow 录制选择器命中框架自动 id 导致 type 报 Illegal invocation.md)
+- [2026-11-02 · fix: stdio 拉起时端口已有 broker 则转发现有实例而非退出](./changelog/2026-11-02-fix： stdio 拉起时端口已有 broker 则转发现有实例而非退出.md)
 - [2026-10-30 · fix: 「运行 flow」磁贴补上 YAML 粘贴直接运行入口](./changelog/2026-10-30-fix： 「运行 flow」磁贴补上 YAML 粘贴直接运行入口.md)
 - [2026-10-30 · refactor: flow 执行整体迁入浏览器扩展，broker 退化为纯传输](./changelog/2026-10-30-refactor： flow 执行整体迁入浏览器扩展，broker 退化为纯传输.md)
 - [2026-10-30 · feat: 新增「运行 flow」磁贴，执行入口不再藏在录制详情底部](./changelog/2026-10-30-feat： 新增「运行 flow」磁贴，执行入口不再藏在录制详情底部.md)

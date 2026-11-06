@@ -15,6 +15,7 @@ sqa('.cat i').forEach(function(i){ i.textContent = B.countOf(i.dataset.c); });
 /* 头部按钮与分类按钮：切换语言时面板内容会被重绘（旧节点事件随之丢失），只需重绑这两组 */
 function bindHeader(){
   sq('#p-close').onclick = ui.closePanel;
+  sq('#p-set').onclick = ui.openSettings;
   sq('#p-about').onclick = ui.openAbout;
   sq('#p-lang').onclick = function(){ B.toggleLang(); };
 }
@@ -86,7 +87,7 @@ clampFab();
 /* ---------- 全局热键 / Esc 分级返回：详情浮层 → 列表 Popover → 面板 ---------- */
 window.addEventListener('keydown', function(e){
   if(state.recording) return; /* 录制中只响应 HUD（暂停 / 停止），屏蔽热键与 Esc 分级返回 */
-  if(e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')){ e.preventDefault(); ui.togglePanel(); if(state.open) localStorage.setItem('ba-tbx-seen', '1'); }
+  if(B.hotkeyMatch(e, B.cfg.hotkey)){ e.preventDefault(); ui.togglePanel(); if(state.open) localStorage.setItem('ba-tbx-seen', '1'); }
   if(e.key === 'Escape'){
     if(sq('.picker-ov')) return; // 拾取器自行处理
     if(dpop.classList.contains('open')) ui.closeDetail();
@@ -117,4 +118,6 @@ B.rebindLang = function(){ if(B.ui && B.ui.bindStatic) B.ui.bindStatic(); bindHe
   }catch(e){}
 })();
 bindUi();
+/* 扩展版从 chrome.storage.local 拉取全局配置（快捷键 / 直接复制），失败则沿用本站点缓存 */
+if(B.loadExtCfg) B.loadExtCfg();
 })(window.BATB);
