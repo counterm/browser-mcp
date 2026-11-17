@@ -3,7 +3,7 @@
 var el = B.u.el, esc = B.u.esc;
 var note = B.w.note, codeBox = B.w.codeBox, scoreBadge = B.w.scoreBadge, btn = B.w.btn, toast = B.w.toast, copyText = B.u.copyText, $$ = B.u.$$;
 var bestSelector = B.sel.bestSelector, xpathOf = B.sel.xpathOf, scoreSelector = B.sel.scoreSelector;
-var ensurePicked = B.ensurePicked, t = B.t;
+var pick = B.pick, ensurePicked = B.ensurePicked, t = B.t;
 
 /* ---------- flow 录制引擎（模块级：面板关开不影响录制；扩展版跨页由 background 续存，见 docs/spec-flow.md） ---------- */
 var REC = { on:false, paused:false, name:'', desc:'', vars:{}, steps:[], url:location.href };
@@ -330,48 +330,123 @@ t('  // 2. 你的逻辑\n', '  // 2. Your logic here\n') + '})();';
       b.appendChild(codeBox(code));
     });
   }},
-{ id:'crawler', cat:'build', name:'爬虫代码生成', icon:'code', star:2, desc:'表格 / 列表 → Python 提取脚本（自动识别 SPA）',
-  en:{ name:'Scraper Code Generator', desc:'Table / list → Python extraction script (auto-detects SPAs)' },
+{ id:'crawler', cat:'build', name:'爬虫代码生成', icon:'code', star:2, desc:'拾取元素 → 向上搜索列表/表格容器 → Python 提取脚本',
+  en:{ name:'Scraper Code Generator', desc:'Pick element → walk up to find list/table container → Python extraction script' },
   run:function(b){
-    var tb = document.getElementById('orders');
-    var sel = tb ? bestSelector(tb) : 'table';
     var url = location.origin + location.pathname;
-    var code =
-'import requests\nfrom bs4 import BeautifulSoup\n\n' +
-'URL = "' + url + '"\n' +
-'html = requests.get(URL, timeout=10, headers={"User-Agent": "..."}).text\n' +
-'soup = BeautifulSoup(html, "html.parser")\n\n' +
-'rows = []\n' +
-"for tr in soup.select('" + sel + " tbody tr'):\n" +
-"    cells = [td.get_text(strip=True) for td in tr.find_all('td')]\n" +
-'    if cells:\n        rows.append(cells)\n\n' +
-t('print(rows)  # 或 csv.writer 落盘', 'print(rows)  # or write to disk with csv.writer');
-    b.appendChild(codeBox(code));
-
-    var stack = (B.detectStack && B.detectStack()) || {};
-    var fw = Object.keys(stack).filter(function(k){ return stack[k] && /React|Vue|Angular|Svelte|Next|Nuxt/.test(k); });
-    if(fw.length){
-      var pw =
-'from playwright.sync_api import sync_playwright\n\n' +
-'URL = "' + url + '"\n' +
-'rows = []\n' +
-'with sync_playwright() as p:\n' +
-'    b = p.chromium.launch(headless=True)\n' +
-'    pg = b.new_page()\n' +
-'    pg.goto(URL, wait_until="networkidle")\n' +
-"    for tr in pg.query_selector_all('" + sel + " tbody tr'):\n" +
-'        cells = [c.inner_text() for c in tr.query_selector_all("td")]\n' +
-'        if cells: rows.append(cells)\n' +
-'    b.close()\n' +
-'print(rows)';
-      b.appendChild(el('div', 'grp-h', t('客户端渲染（' + fw.join('/') + '）· 推荐 Playwright', 'Client-side rendered (' + fw.join('/') + ') · Playwright recommended')));
-      b.appendChild(codeBox(pw));
-      b.appendChild(note(t('检测到 ' + fw.join('/') + '：页面为客户端渲染，requests 拉到的 HTML 是空壳、抓不到表格数据。上面这份 Playwright 脚本会真正执行 JS 后再读 DOM，才能取到渲染后的内容。',
-        'Detected ' + fw.join('/') + ': the page is client-side rendered, so requests only fetches an empty shell and cannot read the table data. The Playwright script above actually executes JS before reading the DOM, so it can capture the rendered content.')));
-    } else {
-      b.appendChild(note(t('选择器由页面表格自动推导；接入真实站点后可按「元素拾取器」的结果替换。',
-        'The selector is derived automatically from the page table; on a real site, replace it with the Element Picker result.')));
+    function findContainers(startEl){
+      var results = [];
+      var node = startEl, seen = new Set();
+      var taboo = /^(tbody|thead|tfoot|tr|td|th)$/i;
+      while(node && node !== document.body && node.nodeType === 1){
+        if(seen.has(node)) break;
+        seen.add(node);
+        var added = false;
+        if(node.tagName === 'TABLE'){
+          var trs = node.querySelectorAll('tr');
+          if(trs.length >= 2){ results.push({el:node, type:'table', rows:'tr', cols:'td,th', rowCount:trs.length}); added = true; }
+        }
+        if(!added && (node.tagName === 'UL' || node.tagName === 'OL')){
+          var lis = node.querySelectorAll(':scope > li');
+          if(lis.length >= 3){ results.push({el:node, type:'list', rows:'li', cols:null, rowCount:lis.length}); added = true; }
+        }
+        if(!added){
+          var direct = [];
+          for(var i = 0; i < node.children.length; i++){
+            var c = node.children[i];
+            if(!taboo.test(c.tagName) && c.getClientRects().length > 0) direct.push(c);
+          }
+          if(direct.length >= 3){
+            var tc = {};
+            direct.forEach(function(x){ var tg = x.tagName.toLowerCase(); tc[tg] = (tc[tg] || 0) + 1; });
+            var domTag = Object.keys(tc).sort(function(a,bb){ return tc[bb] - tc[a]; })[0];
+            if(tc[domTag] >= 3){
+              results.push({el:node, type:'custom', rows:domTag, cols:null, rowCount:tc[domTag]});
+            }
+          }
+        }
+        node = node.parentElement;
+      }
+      return results.slice(0, 5);
     }
+    function ssrCode(c){
+      var sel = bestSelector(c.el);
+      if(c.type === 'table'){
+        return 'import requests\nfrom bs4 import BeautifulSoup\n\n' +
+          'URL = "' + url + '"\n' +
+          'html = requests.get(URL, timeout=10, headers={"User-Agent": "..."}).text\n' +
+          'soup = BeautifulSoup(html, "html.parser")\n\n' +
+          'rows = []\n' +
+          "for tr in soup.select('" + sel + " " + c.rows + "'):\n" +
+          "    cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]\n" +
+          '    if cells:\n        rows.append(cells)\n\n' +
+          'print(rows)  # 或 csv.writer / pandas 落盘';
+      }
+      return 'import requests\nfrom bs4 import BeautifulSoup\n\n' +
+        'URL = "' + url + '"\n' +
+        'html = requests.get(URL, timeout=10, headers={"User-Agent": "..."}).text\n' +
+        'soup = BeautifulSoup(html, "html.parser")\n\n' +
+        'items = []\n' +
+        "for item in soup.select('" + sel + " > " + c.rows + "'):\n" +
+        "    text = item.get_text(' ', strip=True)\n" +
+        '    items.append(text)\n\n' +
+        'print(items)  # 或 json.dump 落盘';
+    }
+    function pwCode(c){
+      var sel = bestSelector(c.el);
+      if(c.type === 'table'){
+        return 'from playwright.sync_api import sync_playwright\n\n' +
+          'URL = "' + url + '"\nrows = []\n' +
+          'with sync_playwright() as p:\n' +
+          '    b = p.chromium.launch(headless=True)\n' +
+          '    pg = b.new_page()\n' +
+          '    pg.goto(URL, wait_until="networkidle")\n' +
+          "    for tr in pg.query_selector_all('" + sel + " " + c.rows + "'):\n" +
+          "        cells = [cd.inner_text() for cd in tr.query_selector_all('td,th')]\n" +
+          '        if cells: rows.append(cells)\n' +
+          '    b.close()\nprint(rows)';
+      }
+      return 'from playwright.sync_api import sync_playwright\n\n' +
+        'URL = "' + url + '"\nitems = []\n' +
+        'with sync_playwright() as p:\n' +
+        '    b = p.chromium.launch(headless=True)\n' +
+        '    pg = b.new_page()\n' +
+        '    pg.goto(URL, wait_until="networkidle")\n' +
+        "    for el in pg.query_selector_all('" + sel + " > " + c.rows + "'):\n" +
+        '        items.append(el.inner_text())\n' +
+        '    b.close()\nprint(items)';
+    }
+    pick().then(function(e){
+      if(!e) return;
+      var cs = findContainers(e);
+      if(!cs.length){
+        b.appendChild(note(t('没找到列表/表格容器。试试选一个列表项内部的元素（如 td/li 内的文本、按钮、卡片内的标题）。',
+          'No list/table container found. Try picking an element inside a list item (e.g., text, button inside td/li, title inside a card).')));
+        return;
+      }
+      b.appendChild(note(t('从拾取位置向上找到 ' + cs.length + ' 个容器（由近及远）：',
+        'Found ' + cs.length + ' container(s) walking up from the picked element (closest first):')));
+      var stack = (B.detectStack && B.detectStack()) || {};
+      var fw = Object.keys(stack).filter(function(k){ return stack[k] && /React|Vue|Angular|Svelte|Next|Nuxt/.test(k); });
+      cs.forEach(function(c, idx){
+        var typeLabel = c.type === 'table' ? t('表格', 'Table')
+          : c.type === 'list' ? t('列表', 'List')
+          : t('自定义（' + c.rowCount + ' 个重复子项）', 'Custom (' + c.rowCount + ' repeating children)');
+        b.appendChild(el('div', 'grp-h',
+          (idx === 0 ? t('【最内层】', '[Innermost] ') : '') + typeLabel + '  →  ' + bestSelector(c.el)));
+        b.appendChild(codeBox(ssrCode(c)));
+        if(fw.length){
+          b.appendChild(codeBox(pwCode(c)));
+        }
+      });
+      if(fw.length){
+        b.appendChild(note(t('检测到 ' + fw.join('/') + '：SPA 客户端渲染，requests 只能拿到空壳，Playwright 版本才会真正执行 JS 再读 DOM。',
+          'Detected ' + fw.join('/') + ': SPA rendered. requests fetches an empty shell; Playwright actually runs the page then reads DOM.')));
+      } else {
+        b.appendChild(note(t('SSR / 静态页：requests + bs4 直接能用；容器选择器由向上搜索自动推导，不满意可换一个位置重新拾取。',
+          'SSR / static page: requests + bs4 works directly. Container selector is derived by walking up from your pick — re-pick if the selector looks wrong.')));
+      }
+    });
   }},
 { id:'record', cat:'build', name:'录制 flow', icon:'clock', star:3, desc:'点击直接开始录制，停止后复制 YAML 并记入操作记录', adv:true, direct:true,
   en:{ name:'Record Flow', desc:'Click to start recording; YAML is copied and saved to records when you stop' },

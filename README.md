@@ -42,11 +42,12 @@ IDE、Agent 等把 broker 配成一个普通 MCP 服务器即可操控浏览器�
 | ├ `diag.js` | flow 自检 / 自报 / 自记录（内容脚本，加载顺序在 `content.js` 之前）：动作效果采样、失败取证（DOM 片段 + 日志尾部）、静态 lint、运行摘要写操作记录；其它模块只留锚点，检查逻辑全在这一处 |
 | ├ `flowrun.js` | flow 执行器（内容脚本）：解析 YAML（`vendor/js-yaml.min.js`）、逐步执行、断言 / 重试 / 数据组 / 子流程，跨页跳转后自动续跑；进度与报告经 background 上报 broker |
 | ├ `vendor/js-yaml.min.js` | js-yaml 4.1.0（随扩展打包；content 与 background 共用，无网络/无 Python 依赖） |
-| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
+| └ `toolbox/` | 页面工具箱（设计原型 `docs/toolbox/` 的落地版）：14 个零构建模块，background 按白名单注入页面主世界，六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集） |
 | `page-bridge.user.js` | 早期油猴脚本版，**已停止维护、仅作存档**；接入请一律使用 Chrome 扩展 |
 | `docs/spec-flow.md` | YAML 测试流规范：schema、执行语义、断言、MCP/HTTP/CLI 接口 |
 | `docs/spec-diag.md` | flow 自检 / 自报 / 自记录模块：五类能力、数据 schema、容错降级与已知边界 |
 | `docs/research/1.md` | 早期调研笔记（console 注入方案的原理与坑） |
+| `skills/e2e-flow-author/` | 技能源目录（不直接生效）：教 LLM 联合前后端源码 / DDL / 字典写 flow v2；用 `scripts/install.ps1` 安装到 `.trae/skills` 或人工指定路径 |
 
 ## 快速开始
 
@@ -244,6 +245,21 @@ steps:
 
 完整 schema / 变量替换 / secret 打码 / 语义与限制见 **[docs/spec-flow.md](docs/spec-flow.md)**；示例见 `flows/demo-smoke.yaml`。
 
+### 让 LLM 自己写 flow（技能 `skills/e2e-flow-author`）
+
+`skills/` 是**源目录，不参与运行**：技能不装上就不生效，避免仓库里多一份隐式配置。用到时二选一：
+
+```powershell
+# 默认装到本仓库 .trae/skills（已被 .gitignore 忽略）
+powershell -ExecutionPolicy Bypass -File skills\e2e-flow-author\scripts\install.ps1
+# 装到指定目录（如全局或其它项目），已存在需 -Force
+powershell -ExecutionPolicy Bypass -File skills\e2e-flow-author\scripts\install.ps1 -Dest D:\some\.claude\skills -Force
+```
+
+也可以不安装，直接把这些文件路径告诉 LLM 让它按此执行。技能内含：五步工作流（Discover → Contract → Compose → Verify → Repair）、
+字段契约结构（前端 rules + DTO 注解 + DDL + 字典，冲突取最严）、选择器优先级与等待策略、
+MCP 工具速查、契约与 flow 示例（`assets/*.yaml`）。
+
 ## cli_client.py（现成的编排示例）
 
 ```powershell
@@ -280,7 +296,7 @@ python cli_client.py flow flows/demo-smoke.yaml --var user=admin --from-step s03
 
 - **注入**：页面命中白名单后，background 经 `chrome.scripting` 把 `chrome-extension/toolbox/` 下 14 个模块注入**页面主世界**（MAIN world）——React fiber 反查、fetch 拦截、`window.__BA_*` 都要在页面上下文才可见；注入不受页面 CSP 限制
 - **门控即时生效**：白名单配置变更后，已注入页面经 DOM 事件 `batb:gate` 同步显隐——移出白名单立即隐藏，重新命中自动恢复；未注入过的命中页面自动补注入
-- **入口**：右下角圆形 FAB（可拖拽、位置记忆、快捷键唤起，可在「设置」中更换），六分类 37 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
+- **入口**：右下角圆形 FAB（可拖拽、位置记忆、快捷键唤起，可在「设置」中更换），六分类 36 项功能（提示 / 查找 / 样式与屏蔽 / 发给 LLM / 开发产物 / 采集）
 - **中英双语**：面板底部「EN / 中文」一键切换，默认中文，选择存 `localStorage` 刷新后保持；分类、功能名与说明、结果卡片、提示语等全部界面文案均有英文版本
 - **采集**：「网址二维码」把当前网址纯本地生成二维码（扫码在手机打开，可下载 PNG / 复制链接，内嵌 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) MIT 裁剪版）；「整页截图」滚动逐屏截取、拼接为长图并自动下载 PNG；「容器截图」拾取任意元素——可滚动容器只截其内部完整滚动范围（自动向上定位滚动祖先、逐屏裁剪拼接），普通元素截取当前可见区域——两类截图均自动处理浮动元素（fixed 临时隐藏、sticky 临时取消吸附，完成后还原），避免每屏重复；「接口调用」双层捕获页面请求——页面捕获层（`capture-main.js`，document_start 包裹 fetch/XHR）抓请求体/响应体 + webRequest 观察模式抓全量请求头（含 Cookie/Authorization），按 URL+时间合并，列表点开详情可**复制调试文本 / 复制 cURL** 粘给 LLM（默认脱敏 Cookie/token 等鉴权字段，可手动关）；截图两项均经**扩展桥**（content.js 中继 `batb:bridge` → background `captureVisibleTab`）实现，需 content.js 与扩展版本一致（更新扩展后刷新页面）
 - **接口调用的 LLM 查看通道**：LLM 经 broker 发 `netlog` 命令自主查询捕获记录（`list` 摘要 → `get` 详情 / `curl` 回放，无需人工点击），协议与局限详见 `docs/spec-net-protocol.md`

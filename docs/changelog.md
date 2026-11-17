@@ -5,6 +5,7 @@
 
 按日期倒序，每条独立存放于 `changelog/`：
 
+- [2026-11-12 · feat: flow v2 fixtures 声明式数据生成与 e2e-flow-author 技能](./changelog/2026-11-12-feat： flow v2 fixtures 声明式数据生成与 e2e-flow-author 技能.md)
 - [2026-11-05 · fix: text 兜底把「新增」当成「新增用户」，仍会点到旧页面同构按钮](./changelog/2026-11-05-fix： text 兜底把「新增」当成「新增用户」，仍会点到旧页面同构按钮.md)
 - [2026-11-05 · feat: flow 自检 / 自报 / 自记录集中到 diag.js](./changelog/2026-11-05-feat： flow 自检自报自记录集中到 diag.js.md)
 - [2026-11-04 · fix: 选择器命中旧页面同构按钮导致弹错弹窗](./changelog/2026-11-04-fix： 选择器命中旧页面同构按钮导致弹错弹窗.md)

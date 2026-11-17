@@ -35,7 +35,7 @@
   每步之前写入；导航后新页面里的 `flowrun.js` 向 background 取回状态并从下一步继续。
 - **CLI 读取本地文件是允许的**：它只在客户端读入 YAML 文本再内联发送，不产生库副本。
 
-## YAML schema（v1）
+## YAML schema（v1，v2 增量见下文）
 
 ```yaml
 flow: demo-login          # 必填，库内唯一名（小写字母/数字/-/_，≤64 字符）
@@ -107,7 +107,7 @@ flow   # 子流程（编排动作，见下文）
 - 变量替换：`${vars.x}`（flow `vars` + 运行参数合并）与 `${env.NAME}`（扩展设置里的
   `flowenv` 映射，缺了报错），作用于动作参数与 expect 值，支持嵌套结构。
 - `nav` / `back` / `reload` 后固定等 0.5s 再继续；真正等待页面就绪请写 `expect`。
-- 不支持 `data_file`（浏览器内读不到仓库文件）；数据请内联到 `data`。
+- 不支持 `data_file`（浏览器内读不到仓库文件）；数据请内联到 `data`，动态值用 v2 `fixtures`（见下节）。
 
 ## 子流程与数据驱动
 
@@ -140,6 +140,59 @@ steps: [...]              # 每组数据完整跑一遍，${vars.kw} 取当组�
   异步进度按 步×组 计
 - console 轨迹每组一条 `▶ 数据组 i/N`（不回显组值）
 - 全部组跑完才结束；某组因 `stop_on_fail` 中断时，未跑到的组不计入 `rows`
+
+### fixtures（v2 数据生成）
+
+v1 文档无需改动。v2 只新增顶层 `version` / `seed` / `fixtures`；执行器在运行前把 fixtures
+物化成 `${vars.x}`，步骤写法完全不变。
+
+```yaml
+version: 2
+flow: account-create
+seed: 20261112          # 可选；固定后本次运行可复现
+fixtures:
+  username: { gen: username, pattern: '^\w+$', min: 3, max: 32, prefix: e2e_, unique: true }
+  phone:    { gen: phone, pattern: '^1[3-9]\d{9}$' }
+  email:    { gen: email, domain: example.com }
+  idCard:   { gen: cn_idcard }
+  sex:      { pick: [1, 2] }
+  status:   { dict: account_status, values: [1000001, 1000002], pick: first }
+steps:
+  - { id: s01, do: type, selector: 'input[placeholder="请填写账户"]', text: '${vars.username}' }
+```
+
+生成器：
+
+| 写法 | 产出 | 主要参数 |
+|---|---|---|
+| `gen: username` | 字母数字账号，默认 `e2e_<token>` | `prefix` `min` `max` `length` `unique` |
+| `gen: phone` | 11 位手机号 `1[3-9]\d{9}` | `prefix` `unique` |
+| `gen: email` | `<prefix><token>@<domain>` | `prefix` `domain` |
+| `gen: cn_idcard` | 18 位身份证（含校验位） | `area`（默认 110101） |
+| `gen: date` | 日期 | `offset`（天）`format`（默认 `YYYY-MM-DD`） |
+| `gen: number` | 整数 | `min` `max` |
+| `gen: uuid` | UUID v4 | — |
+| `gen: seq` | 序号 | `start` `step` |
+| `gen: pattern` | 按正则生成 | `pattern` |
+| `gen: string` | 随机字母数字 | `length` `prefix` `suffix` |
+| `gen: bool` | 布尔 | — |
+| `pick: [...]` | 从列表取一个 | `pick` |
+| `dict: 名称` | 从字典值取 | `dict` `values` `pick: first/last/random` |
+| `ref: 键名` | 引用已生成的 fixture | `ref` |
+| `env: 名称` | 读扩展 `flowenv` | `env` |
+| `template: 字符串` | 变量模板，可引用已生成的 fixture | `template` |
+| `const: 任意值` | 常量 | `const` |
+
+语义与边界：
+
+- 物化顺序：`flow.vars` → `fixtures` → 运行参数 `vars` → `data` 当组；后者覆盖前者。
+- 每个 `data` 组单独物化；`unique` 值按 `run_id + 组号` 变化。跨页续跑复用已物化结果。
+- `dict` 不查库：设计期把字典值解析到 `values`，运行期只在这里取值；缺 `values` 启动即报错。
+- `pattern` 是生成后的兜底校验；`gen: pattern` 支持常见子集（字面量、`\d \w \s`、字符类、
+  分组、`{n,m}` / `*` / `+` / `?`），复杂断言会校验失败并报错。
+- `secret: true` 的 fixture 在报告 `fixtures` 字段里打码为 `***`；步骤参数仍建议配 `secret: true`。
+- fixtures 只在顶层 flow 物化；子流程通过 `vars` 接收具体值。
+- 报告新增 `version` / `seed` / `fixtures`（打码后），便于复现与审计。
 
 ### 定时回归
 
@@ -245,6 +298,9 @@ python cli_client.py flow <本地flow.yaml> [--page mark] [--var k=v ...]
     「运行」经 broker 转发给本页 `flowrun.js`，报告渲染进面板（截图内联为缩略图）。
 - **重试**：`retry`（额外次数，上限 10）/ `retry_wait_ms`（间隔，默认 1000）；动作报错与
   断言不过都会重试，变量展开错误不重试；重试成功后报告不留 error。
+- **动态数据（v2）**：`fixtures` 在页面内物化，不读仓库 / 数据库；`dict` 的 `values` 需设计期
+  解析后内联。`secret` fixture 在报告里打码，但运行状态（`chrome.storage.session`）会保留本次
+  生成值以便跨页续跑；tab 关闭即清。
 - **已知边界**：`type` 不支持按 text 定位（只用 bid / selector，`text` 恰好是输入值）；
   目标不是 input / textarea / contenteditable 时报「目标不可输入」；iframe 内元素依赖现有 click/dom 能力；
   expect 的 `text` 读 `innerText`；`data_file` 不支持；`${env.X}` 只在扩展本地配置里取；

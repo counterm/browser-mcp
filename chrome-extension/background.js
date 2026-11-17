@@ -691,6 +691,56 @@ async function flowLibAll() {
   return o[FLOWS_KEY] || {};
 }
 
+/** flow v2 fixtures 的最小校验；规则与 flowrun.js 保持一致 */
+const FLOW_FIX_SRC = ['gen', 'pick', 'dict', 'ref', 'env', 'template', 'const'];
+const FLOW_GEN_NAMES = new Set(['username', 'phone', 'email', 'cn_idcard', 'date', 'number',
+  'uuid', 'seq', 'pattern', 'string', 'bool']);
+const FLOW_FIX_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function flowLibValidateFixtures(fixtures) {
+  if (!fixtures || typeof fixtures !== 'object' || Array.isArray(fixtures)) throw new Error('fixtures 必须是映射');
+  const keys = Object.keys(fixtures);
+  if (!keys.length) throw new Error('fixtures 不能为空');
+  for (const k of keys) {
+    if (!FLOW_FIX_NAME_RE.test(k)) throw new Error(`fixtures 键名非法：${k}`);
+    const s = fixtures[k];
+    if (s == null || typeof s !== 'object') continue;
+    if (Array.isArray(s)) throw new Error(`fixtures.${k} 不能是列表（用 pick / values）`);
+    const srcs = FLOW_FIX_SRC.filter((x) => x !== 'pick' && x in s);
+    const pickOnly = 'pick' in s && !srcs.length;
+    if (!pickOnly && srcs.length !== 1) {
+      throw new Error(`fixtures.${k} 需要 ${FLOW_FIX_SRC.join(' / ')} 中恰好一个（dict 可额外带 pick）`);
+    }
+    if ('pick' in s && !('dict' in s)) {
+      if (srcs.length) throw new Error(`fixtures.${k}: pick 不能和 ${srcs.join(' / ')} 同时使用`);
+      if (!Array.isArray(s.pick)) throw new Error(`fixtures.${k}: 单独使用 pick 时必须是列表`);
+    }
+    if (s.gen != null && !FLOW_GEN_NAMES.has(String(s.gen))) throw new Error(`fixtures.${k}: 不支持的 gen「${s.gen}」`);
+    if (s.pick != null && !Array.isArray(s.pick) && !['first', 'last', 'random'].includes(s.pick)) {
+      throw new Error(`fixtures.${k}: pick 必须是列表或 first / last / random`);
+    }
+    if (Array.isArray(s.pick) && !s.pick.length) throw new Error(`fixtures.${k}: pick 不能为空`);
+    if (s.dict != null && (!Array.isArray(s.values) || !s.values.length)) {
+      throw new Error(`fixtures.${k}: dict 需要 values（设计期把字典值解析后内联）`);
+    }
+    if (s.dict != null && Array.isArray(s.pick)) {
+      throw new Error(`fixtures.${k}: dict 的 pick 只能是 first / last / random`);
+    }
+    if (s.ref != null && !FLOW_FIX_NAME_RE.test(String(s.ref))) throw new Error(`fixtures.${k}: ref 必须是 fixtures 键名`);
+    if (s.pattern != null) {
+      try { new RegExp(String(s.pattern)); } catch (e) { throw new Error(`fixtures.${k}: pattern 非法`); }
+    }
+    for (const [nk, lo, hi] of [['min', 0, 100000], ['max', 0, 100000], ['length', 0, 100000],
+      ['offset', -100000, 100000], ['start', -1e9, 1e9], ['step', -1e9, 1e9]]) {
+      const v = s[nk];
+      if (v == null) continue;
+      if (typeof v !== 'number' || !isFinite(v) || v < lo || v > hi) throw new Error(`fixtures.${k}: ${nk} 超出范围`);
+    }
+    if (s.unique != null && typeof s.unique !== 'boolean') throw new Error(`fixtures.${k}: unique 必须是布尔`);
+    if (s.secret != null && typeof s.secret !== 'boolean') throw new Error(`fixtures.${k}: secret 必须是布尔`);
+  }
+}
+
 /** 保存前的最小 schema 校验（与 flowrun.js 同一套规则；执行时还会再校验一次） */
 function flowLibValidate(text, wantName) {
   let doc;
@@ -701,6 +751,11 @@ function flowLibValidate(text, wantName) {
     throw new Error('flow 名非法（小写字母/数字/-/_，≤64 字符）：' + JSON.stringify(name));
   }
   if (wantName && name !== wantName) throw new Error(`flow 名与保存名不一致：${name} ≠ ${wantName}`);
+  if (doc.version != null && doc.version !== 1 && doc.version !== 2) throw new Error('version 只支持 1 / 2');
+  if (doc.seed != null && typeof doc.seed !== 'string' && typeof doc.seed !== 'number') {
+    throw new Error('seed 必须是字符串或数字');
+  }
+  if (doc.fixtures != null) flowLibValidateFixtures(doc.fixtures);
   if (!Array.isArray(doc.steps) || !doc.steps.length) throw new Error('steps 必须是非空列表');
   const seen = new Set();
   doc.steps.forEach((s, i) => {
